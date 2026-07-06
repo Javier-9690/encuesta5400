@@ -9,11 +9,11 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
+    <div class="brand brand-left">
       <img src="{{ url_for('static', filename='img/logo_aramark.png') }}" alt="Aramark">
     </div>
-    <div class="camp">
-      <img src="{{ url_for('static', filename='img/logo_campamento_5400.png') }}" alt="Aramark Campamento 5400">
+    <div class="brand brand-right">
+      <img src="{{ url_for('static', filename='img/logo_campamento_5400.png') }}" alt="Escondida BHP">
     </div>
   </header>
   <main class="container">
@@ -29,7 +29,7 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="footer">
-    Generado automáticamente a partir de datos operacionales • Evaluación Interna • Dashboard Web
+    Generado automáticamente a partir de datos operacionales • Evaluación Interna • Campamento 5400
   </footer>
 </body>
 </html>

@@ -1,51 +1,40 @@
 :root {
-  --red: #d71920;
-  --red-dark: #a90f17;
-  --red-soft: #fff1f2;
+  --red: #ed1b2e;
+  --red-dark: #b60f1f;
+  --red-soft: #fff1f3;
+  --orange: #f58220;
   --dark: #303030;
   --text: #303030;
   --muted: #707070;
   --line: #e6e6e6;
   --bg: #f4f4f4;
   --card: #ffffff;
-  --ok: #3a8a43;
+  --ok: #2f7d32;
   --warn: #ef8f2f;
   --danger: #cf222e;
 }
-
 * { box-sizing: border-box; }
 body {
   margin: 0;
   font-family: Arial, Helvetica, sans-serif;
   color: var(--text);
-  background:
-    linear-gradient(180deg, #fff7f8 0%, #f4f4f4 240px);
+  background: linear-gradient(180deg, #fff6f7 0%, #f4f4f4 240px);
 }
 .topbar {
   width: min(1120px, calc(100% - 32px));
   margin: 22px auto 0;
-  padding: 18px 28px 24px;
-  border-top: 6px solid var(--red);
+  padding: 18px 28px 20px;
+  border-top: 7px solid var(--red);
   border-bottom: 4px solid var(--red);
   display: flex;
   justify-content: space-between;
   align-items: center;
   background: #fff;
-  box-shadow: 0 8px 24px rgba(215, 25, 32, 0.08);
+  box-shadow: 0 8px 24px rgba(237, 27, 46, 0.08);
 }
-.brand img {
-  display: block;
-  height: 38px;
-  width: auto;
-}
-.camp img {
-  display: block;
-  max-height: 34px;
-  max-width: 430px;
-  width: auto;
-}
-.brand { min-width: 210px; }
-.camp { display: flex; justify-content: flex-end; align-items: center; }
+.brand img { display: block; width: auto; object-fit: contain; }
+.brand-left img { height: 66px; max-width: 310px; }
+.brand-right img { height: 46px; max-width: 470px; }
 .container {
   width: min(1120px, calc(100% - 32px));
   margin: 0 auto 28px;
@@ -70,7 +59,7 @@ h1 {
 h1::after {
   content: "";
   display: block;
-  width: 140px;
+  width: 160px;
   height: 4px;
   margin-top: 12px;
   background: var(--red);
@@ -85,6 +74,7 @@ h1::after {
   gap: 10px;
 }
 .import-card label { font-weight: 800; font-size: 14px; }
+.import-card a { color: var(--red-dark); font-weight: 800; }
 input[type="file"], select {
   width: 100%;
   border: 1px solid #d4d4d4;
@@ -156,20 +146,9 @@ td { font-size: 15px; }
 .ok { color: var(--ok) !important; }
 .warn, .neutral { color: var(--warn) !important; }
 .danger { color: var(--danger) !important; }
-.two-col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 28px;
-}
-.panel {
-  border-top: 2px solid var(--red);
-  padding-top: 10px;
-}
-.panel h2 {
-  margin: 0 0 14px;
-  color: var(--red);
-  font-size: 20px;
-}
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.panel { border-top: 2px solid var(--red); padding-top: 10px; }
+.panel h2 { margin: 0 0 14px; color: var(--red); font-size: 20px; }
 blockquote {
   margin: 0 0 12px;
   border-left: 5px solid var(--red);
@@ -181,17 +160,10 @@ blockquote {
 }
 .analysis-list { margin: 0; padding-left: 20px; }
 .analysis-list li { margin: 0 0 12px; line-height: 1.35; }
-.chart-card {
-  border: 1px solid var(--line);
-  background: #fff;
-  padding: 18px;
-  margin-bottom: 12px;
-}
+.chart-card { border: 1px solid var(--line); background: #fff; padding: 18px; margin-bottom: 12px; }
 .note { margin-top: -6px; color: #555; }
 .radar-layout { align-items: center; }
-.dimensions {
-  border-top: 0;
-}
+.dimensions { border-top: 0; }
 .dimension-row {
   display: flex;
   justify-content: space-between;
@@ -201,12 +173,7 @@ blockquote {
   font-size: 17px;
 }
 .dimension-row span { font-weight: 800; }
-.empty-state {
-  border: 1px dashed #cfcfcf;
-  background: #fbfbfb;
-  padding: 32px;
-  text-align: center;
-}
+.empty-state { border: 1px dashed #cfcfcf; background: #fbfbfb; padding: 32px; text-align: center; }
 .empty-state h2 { margin-top: 0; }
 .messages { margin-bottom: 20px; }
 .message { padding: 12px 14px; border-radius: 4px; margin-bottom: 8px; font-weight: 700; }
@@ -223,14 +190,12 @@ blockquote {
   color: #999;
   font-size: 13px;
 }
-
 @media (max-width: 860px) {
   .hero, .two-col, .kpi-grid { grid-template-columns: 1fr; }
   .topbar { display: block; }
-  .brand { min-width: 0; }
-  .brand img { height: 32px; }
-  .camp { justify-content: flex-start; margin-top: 12px; }
-  .camp img { max-width: 100%; max-height: 28px; }
+  .brand-left img { height: 46px; max-width: 260px; }
+  .brand-right { margin-top: 18px; }
+  .brand-right img { height: auto; max-width: 100%; }
   h1 { font-size: 27px; }
   .row { grid-template-columns: 1fr; }
 }

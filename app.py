@@ -1,39 +1,27 @@
 import csv
 import io
 import json
+import math
 import os
 import sqlite3
-from datetime import datetime
+import zlib
+from collections import defaultdict
+from datetime import datetime, timedelta
+from html import escape as html_escape
+from statistics import mean
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
 from flask import Flask, Response, flash, redirect, render_template, request, send_file, url_for
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import cm
-from reportlab.platypus import (
-    Image,
-    PageBreak,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
+from openpyxl import Workbook, load_workbook
 from werkzeug.utils import secure_filename
 
 APP_TITLE = "Dashboard Encuesta de Satisfacción - Campamento 5400"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 LOGO_ARAMARK_PATH = os.path.join(STATIC_DIR, "img", "logo_aramark.png")
-LOGO_CAMPAMENTO_PATH = os.path.join(STATIC_DIR, "img", "logo_campamento_5400.png")
+LOGO_BHP_PATH = os.path.join(STATIC_DIR, "img", "logo_campamento_5400.png")
 DB_PATH = os.environ.get("DATABASE_PATH", "/var/data/encuesta_5400.db")
 if not os.path.exists(os.path.dirname(DB_PATH)):
-    DB_PATH = os.path.join(os.path.dirname(__file__), "encuesta_5400.db")
+    DB_PATH = os.path.join(BASE_DIR, "encuesta_5400.db")
 
 EXPECTED_COLUMNS = [
     "FECHA",
@@ -45,6 +33,12 @@ EXPECTED_COLUMNS = [
     "TOTAL", "PROMEDIO", "COMENTARIOS",
 ]
 
+DB_COLUMNS = [
+    "fecha", "q1_respuesta", "q1_puntaje", "q2_respuesta", "q2_puntaje",
+    "q3_respuesta", "q3_puntaje", "q4_respuesta", "q4_puntaje",
+    "q5_respuesta", "q5_puntaje", "total", "promedio", "comentarios",
+]
+
 DIMENSION_LABELS = {
     "q1_puntaje": "Q1. Primera Impresión / Recepción",
     "q2_puntaje": "Q2. Calidad del Serv. Principal",
@@ -52,6 +46,10 @@ DIMENSION_LABELS = {
     "q4_puntaje": "Q4. Higiene y Presentación",
     "q5_puntaje": "Q5. Trato y Factor Humano",
 }
+
+RADAR_LABELS = ["Q1 Recepción", "Q2 Calidad", "Q3 Tiempos", "Q4 Higiene", "Q5 Trato"]
+RED = "#ed1b2e"
+RED_DARK = "#b60f1f"
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "cambiar-esta-clave-en-render")
@@ -92,9 +90,9 @@ def init_db():
         conn.commit()
 
 
-def normalize_col(value: str) -> str:
+def normalize_col(value) -> str:
     return (
-        str(value)
+        str(value or "")
         .strip()
         .upper()
         .replace("Á", "A")
@@ -107,82 +105,131 @@ def normalize_col(value: str) -> str:
     )
 
 
-def parse_excel_date(series: pd.Series) -> pd.Series:
-    numeric = pd.to_numeric(series, errors="coerce")
-    # Los números de serie de Excel para fechas recientes suelen estar entre 30000 y 70000.
-    # Si se intentan convertir como fecha normal, pandas puede interpretarlos como nanosegundos de 1970.
-    excel_mask = numeric.between(30000, 70000)
-    parsed_numeric = pd.to_datetime(numeric.where(excel_mask), unit="D", origin="1899-12-30", errors="coerce")
-    parsed_regular = pd.to_datetime(series.where(~excel_mask), errors="coerce", dayfirst=True)
-    return parsed_regular.fillna(parsed_numeric)
+def to_float(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", ".")
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
-def clean_score(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series.astype(str).str.replace(",", ".", regex=False), errors="coerce")
-
-
-def read_uploaded_workbook(file_storage) -> pd.DataFrame:
-    filename = secure_filename(file_storage.filename or "archivo.xlsx")
-    if not filename.lower().endswith((".xlsx", ".xls")):
-        raise ValueError("El archivo debe ser Excel (.xlsx o .xls).")
-
-    # Se leen todas las pestañas para encontrar automáticamente "Encuesta de Satisfacción".
-    file_storage.stream.seek(0)
-    sheets = pd.read_excel(file_storage.stream, sheet_name=None)
-    selected_name = None
-    for name in sheets.keys():
-        if "encuesta" in name.lower() and "satisf" in name.lower():
-            selected_name = name
-            break
-    if selected_name is None:
-        selected_name = next(iter(sheets.keys()))
-
-    df = sheets[selected_name].copy()
-    df = df.dropna(how="all")
-    if df.empty:
-        raise ValueError(f"La pestaña '{selected_name}' no contiene datos.")
-
-    df.columns = [normalize_col(c) for c in df.columns]
-    normalized_expected = [normalize_col(c) for c in EXPECTED_COLUMNS]
-    missing = [col for col in normalized_expected if col not in df.columns]
-    if missing:
-        raise ValueError(
-            "Faltan columnas requeridas en la pestaña de encuesta: " + ", ".join(missing)
-        )
-
-    df = df[normalized_expected].copy()
-    df.columns = [
-        "fecha",
-        "q1_respuesta", "q1_puntaje",
-        "q2_respuesta", "q2_puntaje",
-        "q3_respuesta", "q3_puntaje",
-        "q4_respuesta", "q4_puntaje",
-        "q5_respuesta", "q5_puntaje",
-        "total", "promedio", "comentarios",
+def parse_date(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        # Fecha serial de Excel.
+        if 30000 <= float(value) <= 70000:
+            return datetime(1899, 12, 30) + timedelta(days=float(value))
+    text = str(value).strip()
+    formats = [
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+        "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
+        "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M", "%d-%m-%Y",
     ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
-    df["fecha"] = parse_excel_date(df["fecha"])
-    for col in ["q1_puntaje", "q2_puntaje", "q3_puntaje", "q4_puntaje", "q5_puntaje", "total", "promedio"]:
-        df[col] = clean_score(df[col])
 
-    q_cols = ["q1_puntaje", "q2_puntaje", "q3_puntaje", "q4_puntaje", "q5_puntaje"]
-    df["total"] = df["total"].fillna(df[q_cols].sum(axis=1))
-    df["promedio"] = df["promedio"].fillna(df[q_cols].mean(axis=1))
+def text_value(value):
+    if value is None:
+        return ""
+    return str(value).strip()
 
-    df = df.dropna(subset=["fecha", "promedio"])
-    df = df[(df["promedio"] >= 1) & (df["promedio"] <= 5)]
-    if df.empty:
+
+def find_header_row(ws, max_scan=30):
+    expected = {normalize_col(c) for c in EXPECTED_COLUMNS}
+    for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=max_scan, values_only=True), 1):
+        normalized = [normalize_col(cell) for cell in row]
+        hits = sum(1 for col in normalized if col in expected)
+        if hits >= 8:
+            return row_idx, normalized
+    return 1, [normalize_col(cell.value) for cell in ws[1]]
+
+
+def read_uploaded_workbook(file_storage):
+    filename = secure_filename(file_storage.filename or "archivo.xlsx")
+    if not filename.lower().endswith(".xlsx"):
+        raise ValueError("El archivo debe estar en formato Excel .xlsx.")
+
+    file_storage.stream.seek(0)
+    wb = load_workbook(filename=file_storage.stream, data_only=True, read_only=True)
+
+    selected = None
+    for name in wb.sheetnames:
+        low = name.lower()
+        if "encuesta" in low and "satisf" in low:
+            selected = name
+            break
+    if selected is None:
+        selected = wb.sheetnames[0]
+
+    ws = wb[selected]
+    header_row, normalized_headers = find_header_row(ws)
+    header_map = {name: idx for idx, name in enumerate(normalized_headers) if name}
+    expected = [normalize_col(c) for c in EXPECTED_COLUMNS]
+    missing = [col for col in expected if col not in header_map]
+    if missing:
+        raise ValueError("Faltan columnas requeridas: " + ", ".join(missing))
+
+    records = []
+    q_score_cols = ["q1_puntaje", "q2_puntaje", "q3_puntaje", "q4_puntaje", "q5_puntaje"]
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        if not row or not any(value is not None and str(value).strip() != "" for value in row):
+            continue
+
+        raw = {}
+        for expected_name, db_name in zip(expected, DB_COLUMNS):
+            idx = header_map[expected_name]
+            raw[db_name] = row[idx] if idx < len(row) else None
+
+        fecha = parse_date(raw["fecha"])
+        if fecha is None:
+            continue
+
+        record = {
+            "fecha": fecha.strftime("%Y-%m-%d %H:%M:%S"),
+            "q1_respuesta": text_value(raw["q1_respuesta"]),
+            "q2_respuesta": text_value(raw["q2_respuesta"]),
+            "q3_respuesta": text_value(raw["q3_respuesta"]),
+            "q4_respuesta": text_value(raw["q4_respuesta"]),
+            "q5_respuesta": text_value(raw["q5_respuesta"]),
+            "comentarios": text_value(raw["comentarios"]),
+        }
+        for col in q_score_cols:
+            record[col] = to_float(raw[col])
+
+        valid_scores = [record[col] for col in q_score_cols if record[col] is not None]
+        total = to_float(raw["total"])
+        promedio = to_float(raw["promedio"])
+        if total is None and valid_scores:
+            total = sum(valid_scores)
+        if promedio is None and valid_scores:
+            promedio = sum(valid_scores) / len(valid_scores)
+        if promedio is None or promedio < 1 or promedio > 5:
+            continue
+        record["total"] = total
+        record["promedio"] = promedio
+        records.append(record)
+
+    if not records:
         raise ValueError("No se encontraron registros válidos con fecha y promedio entre 1 y 5.")
-
-    for col in ["q1_respuesta", "q2_respuesta", "q3_respuesta", "q4_respuesta", "q5_respuesta", "comentarios"]:
-        df[col] = df[col].fillna("").astype(str).str.strip()
-
-    df["fecha"] = df["fecha"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    return df
+    return records
 
 
-def save_dataframe(df: pd.DataFrame, mode: str = "replace") -> int:
-    records = df.to_dict(orient="records")
+def save_records(records, mode="replace"):
     imported_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
         if mode == "replace":
@@ -199,26 +246,26 @@ def save_dataframe(df: pd.DataFrame, mode: str = "replace") -> int:
                 :q5_respuesta, :q5_puntaje, :total, :promedio, :comentarios, :imported_at
             )
             """,
-            [{**row, "imported_at": imported_at} for row in records],
+            [{**record, "imported_at": imported_at} for record in records],
         )
         conn.commit()
     return len(records)
 
 
-def load_data() -> pd.DataFrame:
+def load_data():
     with get_conn() as conn:
-        df = pd.read_sql_query("SELECT * FROM encuestas ORDER BY fecha ASC, id ASC", conn)
-    if df.empty:
-        return df
-    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-    numeric_cols = ["q1_puntaje", "q2_puntaje", "q3_puntaje", "q4_puntaje", "q5_puntaje", "total", "promedio"]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df.dropna(subset=["fecha", "promedio"])
+        rows = conn.execute("SELECT * FROM encuestas ORDER BY fecha ASC, id ASC").fetchall()
+    data = []
+    for row in rows:
+        item = dict(row)
+        item["fecha_dt"] = parse_date(item.get("fecha"))
+        if item["fecha_dt"] is not None and item.get("promedio") is not None:
+            data.append(item)
+    return data
 
 
 def status_from_score(score):
-    if pd.isna(score):
+    if score is None:
         return "Sin encuestas"
     if score >= 4.80:
         return "Mantener estándar"
@@ -227,42 +274,69 @@ def status_from_score(score):
     return "Generar plan de acción"
 
 
+def status_class(text):
+    text = (text or "").lower()
+    if "mantener" in text:
+        return "ok"
+    if "preventivo" in text or "seguimiento" in text:
+        return "warn"
+    if "acción" in text or "accion" in text or "riesgo" in text:
+        return "danger"
+    return "neutral"
+
+
+def pct_number(part, total):
+    return 0.0 if total == 0 else round((part / total) * 100, 1)
+
+
+def pct(part, total):
+    return f"{pct_number(part, total):.1f}%"
+
+
+def start_of_week(dt):
+    return (dt - timedelta(days=dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def week_label(start_date):
-    end_date = start_date + pd.Timedelta(days=6)
+    end_date = start_date + timedelta(days=6)
     iso = start_date.isocalendar()
     return f"Sem. {int(iso.week):02d} ({start_date:%d-%m} al {end_date:%d-%m})"
 
 
-def add_week_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["week_start"] = out["fecha"].dt.normalize() - pd.to_timedelta(out["fecha"].dt.weekday, unit="D")
-    out["week_end"] = out["week_start"] + pd.Timedelta(days=6)
-    out["iso_year"] = out["fecha"].dt.isocalendar().year.astype(int)
-    out["iso_week"] = out["fecha"].dt.isocalendar().week.astype(int)
-    out["periodo"] = out["week_start"].apply(week_label)
-    return out
+def average(values):
+    clean = [v for v in values if v is not None]
+    return round(mean(clean), 2) if clean else None
 
 
-def build_weekly(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame()
-    dfw = add_week_columns(df)
-    q_cols = list(DIMENSION_LABELS.keys())
-    agg_dict = {col: "mean" for col in q_cols + ["promedio"]}
-    agg_dict["id"] = "count"
-    weekly = dfw.groupby(["week_start", "week_end", "iso_year", "iso_week", "periodo"], as_index=False).agg(agg_dict)
-    weekly = weekly.rename(columns={"id": "n_encuestas", "promedio": "promedio_general"})
-    weekly["estado"] = weekly["promedio_general"].apply(status_from_score)
-    weekly = weekly.sort_values("week_start")
+def build_weekly(data):
+    buckets = defaultdict(list)
+    for item in data:
+        buckets[start_of_week(item["fecha_dt"])].append(item)
+    weekly = []
+    for week_start in sorted(buckets):
+        rows = buckets[week_start]
+        record = {
+            "week_start": week_start,
+            "week_end": week_start + timedelta(days=6),
+            "iso_year": week_start.isocalendar().year,
+            "iso_week": week_start.isocalendar().week,
+            "periodo": week_label(week_start),
+            "n_encuestas": len(rows),
+            "promedio_general": average([r.get("promedio") for r in rows]),
+        }
+        for col in DIMENSION_LABELS:
+            record[col] = average([r.get(col) for r in rows])
+        record["estado"] = status_from_score(record["promedio_general"])
+        weekly.append(record)
     return weekly
 
 
-def build_metrics(df: pd.DataFrame):
-    if df.empty:
+def build_metrics(data):
+    if not data:
         return {
             "has_data": False,
             "total": 0,
-            "global": 0,
+            "global_score": 0,
             "excelencia": 0,
             "risk": [],
             "comments": [],
@@ -272,17 +346,18 @@ def build_metrics(df: pd.DataFrame):
             "analysis": [],
             "chart_labels": [],
             "chart_values": [],
-            "radar_labels": [],
+            "radar_labels": RADAR_LABELS,
             "radar_values": [],
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "global_status": "Sin datos",
+            "latest_label": "Sin datos",
         }
 
-    total = int(len(df))
-    global_score = float(df["promedio"].mean())
-    promoters = int((df["promedio"] >= 4.8).sum())
-    neutrals = int(((df["promedio"] >= 4.0) & (df["promedio"] < 4.8)).sum())
-    detractors = int((df["promedio"] < 4.0).sum())
+    total = len(data)
+    global_score = average([item.get("promedio") for item in data]) or 0
+    promoters = sum(1 for item in data if item.get("promedio", 0) >= 4.8)
+    neutrals = sum(1 for item in data if 4.0 <= item.get("promedio", 0) < 4.8)
+    detractors = sum(1 for item in data if item.get("promedio", 0) < 4.0)
 
     risk = [
         {"categoria": "Promotores (Alta Satisfacción)", "criterio": "4.8 - 5.0", "volumen": promoters, "representacion": pct(promoters, total), "kind": "ok"},
@@ -290,27 +365,22 @@ def build_metrics(df: pd.DataFrame):
         {"categoria": "Detractores (Riesgo Operativo)", "criterio": "1.0 - 3.9", "volumen": detractors, "representacion": pct(detractors, total), "kind": "danger"},
     ]
 
-    comments_df = df[df["comentarios"].astype(str).str.len() > 0].sort_values("fecha", ascending=False)
-    comments = comments_df["comentarios"].head(6).tolist()
+    comments = [item.get("comentarios", "") for item in sorted(data, key=lambda r: r["fecha_dt"], reverse=True) if item.get("comentarios", "").strip()][:6]
+    weekly = build_weekly(data)
+    last_10 = weekly[-10:]
+    recent = weekly[-3:]
 
-    weekly = build_weekly(df)
-    last_10 = weekly.tail(10).copy()
-    recent = weekly.tail(3).copy()
-
-    latest_week = weekly.tail(1)
-    if latest_week.empty:
-        dim_scores = df[list(DIMENSION_LABELS.keys())].mean()
-        latest_label = "Total histórico"
+    if weekly:
+        latest_start = weekly[-1]["week_start"]
+        latest_rows = [item for item in data if start_of_week(item["fecha_dt"]) == latest_start]
+        latest_label = weekly[-1]["periodo"]
     else:
-        latest_start = latest_week.iloc[0]["week_start"]
-        latest_label = latest_week.iloc[0]["periodo"]
-        week_df = add_week_columns(df)
-        week_df = week_df[week_df["week_start"] == latest_start]
-        dim_scores = week_df[list(DIMENSION_LABELS.keys())].mean()
+        latest_rows = data
+        latest_label = "Total histórico"
 
     dimensions = []
     for key, label in DIMENSION_LABELS.items():
-        score = float(dim_scores.get(key, np.nan)) if not pd.isna(dim_scores.get(key, np.nan)) else None
+        score = average([r.get(key) for r in latest_rows])
         dimensions.append({"codigo": key[:2].upper(), "label": label, "score": score, "foco": score is not None and score < 4.70})
 
     sorted_dims = sorted([d for d in dimensions if d["score"] is not None], key=lambda x: x["score"])
@@ -331,362 +401,552 @@ def build_metrics(df: pd.DataFrame):
     return {
         "has_data": True,
         "total": total,
-        "global": global_score,
+        "global_score": global_score,
         "global_status": status_from_score(global_score),
         "excelencia": pct_number(promoters, total),
         "risk": risk,
         "comments": comments,
         "weekly": weekly,
-        "recent_weeks": records_for_recent(recent),
+        "recent_weeks": [{"periodo": r["periodo"], "n_encuestas": r["n_encuestas"], "promedio": r["promedio_general"], "estado": r["estado"]} for r in recent],
         "dimensions": dimensions,
         "latest_label": latest_label,
         "analysis": analysis,
-        "chart_labels": last_10["periodo"].tolist(),
-        "chart_values": [round(float(v), 2) for v in last_10["promedio_general"].tolist()],
-        "radar_labels": ["Q1 Recepción", "Q2 Calidad", "Q3 Tiempos", "Q4 Higiene", "Q5 Trato"],
-        "radar_values": [round(d["score"], 2) if d["score"] is not None else 0 for d in dimensions],
+        "chart_labels": [r["periodo"] for r in last_10],
+        "chart_values": [r["promedio_general"] for r in last_10],
+        "radar_labels": RADAR_LABELS,
+        "radar_values": [d["score"] or 0 for d in dimensions],
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
 
 
-def pct_number(part, total):
-    return 0 if total == 0 else round((part / total) * 100, 1)
+def export_csv_buffer(data):
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["id"] + DB_COLUMNS + ["imported_at"])
+    writer.writeheader()
+    for item in data:
+        row = {key: item.get(key, "") for key in ["id"] + DB_COLUMNS + ["imported_at"]}
+        row["fecha"] = item.get("fecha")
+        writer.writerow(row)
+    return output.getvalue().encode("utf-8-sig")
 
 
-def pct(part, total):
-    return f"{pct_number(part, total):.1f}%"
+def build_excel_buffer(data, metrics):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Datos Encuesta"
+    ws.append(["ID"] + EXPECTED_COLUMNS + ["IMPORTADO_EN"])
+    for item in data:
+        ws.append([
+            item.get("id"), item.get("fecha"),
+            item.get("q1_respuesta"), item.get("q1_puntaje"),
+            item.get("q2_respuesta"), item.get("q2_puntaje"),
+            item.get("q3_respuesta"), item.get("q3_puntaje"),
+            item.get("q4_respuesta"), item.get("q4_puntaje"),
+            item.get("q5_respuesta"), item.get("q5_puntaje"),
+            item.get("total"), item.get("promedio"), item.get("comentarios"), item.get("imported_at"),
+        ])
 
+    ws2 = wb.create_sheet("Resumen Semanal")
+    ws2.append(["Desde", "Hasta", "Año", "Semana", "Periodo", "N° Encuestas", "Prom. P1", "Prom. P2", "Prom. P3", "Prom. P4", "Prom. P5", "Promedio General", "Estado / Acción"])
+    for row in metrics["weekly"]:
+        ws2.append([
+            row["week_start"].strftime("%Y-%m-%d"), row["week_end"].strftime("%Y-%m-%d"), row["iso_year"], row["iso_week"], row["periodo"], row["n_encuestas"],
+            row.get("q1_puntaje"), row.get("q2_puntaje"), row.get("q3_puntaje"), row.get("q4_puntaje"), row.get("q5_puntaje"), row.get("promedio_general"), row.get("estado"),
+        ])
 
-def records_for_recent(recent: pd.DataFrame):
-    if recent.empty:
-        return []
-    out = []
-    for row in recent.to_dict(orient="records"):
-        out.append({
-            "periodo": row["periodo"],
-            "n_encuestas": int(row["n_encuestas"]),
-            "promedio": round(float(row["promedio_general"]), 2),
-            "estado": row["estado"],
-        })
-    return out
-
-
-def make_line_chart(metrics):
-    labels = metrics["chart_labels"]
-    values = metrics["chart_values"]
-    fig, ax = plt.subplots(figsize=(8.0, 4.0), dpi=140)
-    if values:
-        ax.plot(range(len(values)), values, marker="o", linewidth=2.5, color="#d71920")
-        ax.set_xticks(range(len(values)))
-        ax.set_xticklabels([label.split(" ")[1] if " " in label else label for label in labels], rotation=0)
-        for idx, value in enumerate(values):
-            ax.annotate(f"{value:.2f}", (idx, value), textcoords="offset points", xytext=(0, 8), ha="center", fontsize=8)
-    ax.set_ylim(1, 5.05)
-    ax.set_ylabel("Promedio (sobre 5.0)")
-    ax.set_xlabel("Semana")
-    ax.grid(True, linestyle="--", alpha=0.35)
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-
-def make_radar_chart(metrics):
-    labels = metrics["radar_labels"]
-    values = metrics["radar_values"]
-    if not values:
-        values = [0, 0, 0, 0, 0]
-    angles = np.linspace(0, 2 * np.pi, len(labels), endpoint=False).tolist()
-    values_closed = values + values[:1]
-    angles_closed = angles + angles[:1]
-    fig = plt.figure(figsize=(5.2, 4.2), dpi=140)
-    ax = plt.subplot(111, polar=True)
-    ax.plot(angles_closed, values_closed, color="#d71920", linewidth=2)
-    ax.fill(angles_closed, values_closed, color="#d71920", alpha=0.18)
-    ax.set_xticks(angles)
-    ax.set_xticklabels(labels, fontsize=8)
-    ax.set_ylim(0, 5)
-    ax.set_yticks([1, 2, 3, 4, 5])
-    ax.set_yticklabels(["1", "2", "3", "4", "5"], fontsize=7)
-    ax.grid(True, alpha=0.35)
-    fig.tight_layout()
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf
-
-
-def table_style(header_bg="#303030"):
-    return TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(header_bg)),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#dddddd")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f7f7")]),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ])
-
-
-def section_title(text):
-    return Table([[text]], colWidths=[17.0 * cm], style=TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#d71920")),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 12),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("TOPPADDING", (0, 0), (-1, -1), 7),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-    ]))
-
-
-def header_footer(canvas, doc):
-    canvas.saveState()
-    width, height = A4
-    canvas.setStrokeColor(colors.HexColor("#d71920"))
-    canvas.setLineWidth(2.0)
-    canvas.line(2 * cm, height - 2.15 * cm, width - 2 * cm, height - 2.15 * cm)
-
-    if os.path.exists(LOGO_ARAMARK_PATH):
-        canvas.drawImage(LOGO_ARAMARK_PATH, 2 * cm, height - 1.75 * cm, width=3.0 * cm, height=0.55 * cm, preserveAspectRatio=True, mask="auto")
-    else:
-        canvas.setFont("Helvetica-Bold", 13)
-        canvas.setFillColor(colors.black)
-        canvas.drawString(2 * cm, height - 1.55 * cm, "★ aramark")
-
-    if os.path.exists(LOGO_CAMPAMENTO_PATH):
-        canvas.drawImage(LOGO_CAMPAMENTO_PATH, width - 7.8 * cm, height - 1.72 * cm, width=5.8 * cm, height=0.50 * cm, preserveAspectRatio=True, mask="auto")
-    else:
-        canvas.setFont("Helvetica-Bold", 13)
-        canvas.setFillColor(colors.HexColor("#d71920"))
-        canvas.drawRightString(width - 2 * cm, height - 1.55 * cm, "Aramark Campamento 5400")
-
-    canvas.setFont("Helvetica", 7)
-    canvas.setFillColor(colors.HexColor("#999999"))
-    canvas.line(2 * cm, 1.35 * cm, width - 2 * cm, 1.35 * cm)
-    canvas.drawCentredString(width / 2, 1.0 * cm, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}")
-    canvas.restoreState()
-
-
-def generate_pdf_report(df: pd.DataFrame) -> io.BytesIO:
-    metrics = build_metrics(df)
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2 * cm, leftMargin=2 * cm, topMargin=2.7 * cm, bottomMargin=1.7 * cm)
-    styles = getSampleStyleSheet()
-    title = ParagraphStyle("Title5400", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=18, alignment=0, spaceAfter=4)
-    subtitle = ParagraphStyle("Subtitle5400", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#666666"), spaceAfter=16)
-    normal = ParagraphStyle("Normal5400", parent=styles["Normal"], fontSize=9, leading=11)
-    quote = ParagraphStyle("Quote5400", parent=styles["Normal"], fontSize=8.5, leading=10, leftIndent=8, textColor=colors.HexColor("#555555"))
-
-    story = []
-    story.append(Paragraph("REPORTE EJECUTIVO DE CALIDAD", title))
-    story.append(Paragraph("Evaluación de Satisfacción e Impacto del Factor Humano en la Operación", subtitle))
-    story.append(section_title("1. Resumen Ejecutivo (Macrométricas)"))
-    story.append(Spacer(1, 0.25 * cm))
-
-    card_label = ParagraphStyle("CardLabel", parent=styles["Normal"], fontSize=7, alignment=1, textColor=colors.HexColor("#666666"), fontName="Helvetica-Bold")
-    card_value = ParagraphStyle("CardValue", parent=styles["Normal"], fontSize=18, alignment=1, textColor=colors.HexColor("#222222"), fontName="Helvetica-Bold", leading=22)
-    card_note = ParagraphStyle("CardNote", parent=styles["Normal"], fontSize=7, alignment=1, textColor=colors.HexColor("#3a8a43"), fontName="Helvetica-Bold")
-    cards = [[
-        [Paragraph("TOTAL DE EVALUACIONES", card_label), Paragraph(f"{metrics['total']}", card_value), Paragraph("Muestra Histórica", card_note)],
-        [Paragraph("SATISFACCIÓN GLOBAL", card_label), Paragraph(f"{metrics['global']:.2f} / 5.0", card_value), Paragraph(status_from_score(metrics["global"]), card_note)],
-        [Paragraph("ÍNDICE DE EXCELENCIA", card_label), Paragraph(f"{metrics['excelencia']:.1f}%", card_value), Paragraph("Usuarios Promotores", card_note)],
-    ]]
-    card_table = Table(cards, colWidths=[5.4 * cm, 5.4 * cm, 5.4 * cm])
-    card_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f7f7f7")),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("LINEABOVE", (0, 0), (-1, 0), 2, colors.HexColor("#d71920")),
-        ("BOX", (0, 0), (-1, -1), 0.25, colors.HexColor("#eeeeee")),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    story.append(card_table)
-    story.append(Spacer(1, 0.45 * cm))
-
-    story.append(section_title("2. Distribución del Riesgo Operativo"))
-    risk_rows = [["CATEGORÍA DE USUARIO", "CRITERIO (NOTA)", "VOLUMEN", "REPRESENTACIÓN"]]
+    ws3 = wb.create_sheet("Distribución Riesgo")
+    ws3.append(["Categoría", "Criterio", "Volumen", "Representación"])
     for item in metrics["risk"]:
-        risk_rows.append([item["categoria"], item["criterio"], item["volumen"], item["representacion"]])
-    risk_table = Table(risk_rows, colWidths=[7.0 * cm, 3.4 * cm, 3.0 * cm, 3.2 * cm])
-    risk_table.setStyle(table_style("#eeeeee"))
-    risk_table.setStyle(TableStyle([("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#444444"))]))
-    story.append(Spacer(1, 0.25 * cm))
-    story.append(risk_table)
-    story.append(Spacer(1, 0.45 * cm))
+        ws3.append([item["categoria"], item["criterio"], item["volumen"], item["representacion"]])
 
-    story.append(section_title("3. La Voz del Usuario y Observaciones"))
-    story.append(Spacer(1, 0.25 * cm))
-    comments = metrics["comments"][:4] or ["Sin comentarios registrados."]
-    comments_text = []
-    for c in comments:
-        comments_text.append(Paragraph(f'“{c}”', quote))
-    analysis_text = []
-    for a in metrics["analysis"] or ["Sin datos suficientes para generar análisis cualitativo."]:
-        analysis_text.append(Paragraph("■ " + a, normal))
-    story.append(Table([[comments_text, analysis_text]], colWidths=[8.0 * cm, 8.5 * cm], style=TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LINEBEFORE", (0, 0), (0, 0), 2, colors.HexColor("#d71920")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-    ])))
-
-    story.append(PageBreak())
-    story.append(Paragraph("ANÁLISIS DE TENDENCIAS Y DESGLOSE", title))
-    story.append(Paragraph("Monitoreo Semanal de Resultados Operativos", subtitle))
-    story.append(section_title("4. Evolución Histórica (Últimas 10 Semanas)"))
-    story.append(Spacer(1, 0.25 * cm))
-    line_buf = make_line_chart(metrics)
-    story.append(Image(line_buf, width=16.5 * cm, height=8.1 * cm))
-    story.append(Spacer(1, 0.35 * cm))
-
-    story.append(section_title("5. Resumen Semanas Recientes"))
-    recent_rows = [["SEMANA", "N° ENCUESTAS", "NOTA PROMEDIO", "ESTADO / ACCIÓN"]]
-    for item in metrics["recent_weeks"]:
-        recent_rows.append([item["periodo"], item["n_encuestas"], f"{item['promedio']:.2f}", item["estado"]])
-    if len(recent_rows) == 1:
-        recent_rows.append(["Sin datos", 0, "-", "Sin encuestas"])
-    recent_table = Table(recent_rows, colWidths=[6.2 * cm, 3.4 * cm, 3.4 * cm, 3.8 * cm])
-    recent_table.setStyle(table_style("#eeeeee"))
-    recent_table.setStyle(TableStyle([("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#444444"))]))
-    story.append(Spacer(1, 0.25 * cm))
-    story.append(recent_table)
-    story.append(Spacer(1, 0.35 * cm))
-
-    story.append(section_title(f"6. Desempeño Específico por Dimensiones ({metrics.get('latest_label', 'Última medición')})"))
-    story.append(Spacer(1, 0.2 * cm))
-    story.append(Paragraph("Una calificación por debajo de 4.70 se considera un foco de atención preventivo.", normal))
-
-    story.append(PageBreak())
-    radar_buf = make_radar_chart(metrics)
-    dim_rows = []
+    ws4 = wb.create_sheet("Dimensiones")
+    ws4.append(["Dimensión", "Promedio", "Foco"])
     for item in metrics["dimensions"]:
-        score_text = "-" if item["score"] is None else f"{item['score']:.2f}" + (" (Foco)" if item["foco"] else "")
-        dim_rows.append([item["label"], score_text])
-    dim_table = Table(dim_rows, colWidths=[9.0 * cm, 4.0 * cm], style=TableStyle([
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#d71920")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-    ]))
-    story.append(Table([[Image(radar_buf, width=7.5 * cm, height=6.2 * cm), dim_table]], colWidths=[7.8 * cm, 8.7 * cm], style=TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")])) )
+        ws4.append([item["label"], item["score"], "Sí" if item["foco"] else "No"])
 
-    doc.build(story, onFirstPage=header_footer, onLaterPages=header_footer)
+    for wsx in wb.worksheets:
+        for column_cells in wsx.columns:
+            length = max(len(str(cell.value or "")) for cell in column_cells)
+            wsx.column_dimensions[column_cells[0].column_letter].width = min(max(length + 2, 12), 48)
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
     buffer.seek(0)
     return buffer
 
 
-def build_export_workbook(df: pd.DataFrame) -> io.BytesIO:
-    metrics = build_metrics(df)
-    output = io.BytesIO()
-    raw = df.copy()
-    if not raw.empty:
-        raw["fecha"] = raw["fecha"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    weekly = build_weekly(df)
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        raw.to_excel(writer, index=False, sheet_name="Encuesta de Satisfacción")
-        if not weekly.empty:
-            weekly_export = weekly.copy()
-            for col in ["week_start", "week_end"]:
-                weekly_export[col] = weekly_export[col].dt.strftime("%Y-%m-%d")
-            weekly_export.to_excel(writer, index=False, sheet_name="KPI Semanal")
-        resumen = pd.DataFrame([
-            ["Total de evaluaciones", metrics["total"]],
-            ["Satisfacción global", round(metrics["global"], 2)],
-            ["Índice de excelencia", f"{metrics['excelencia']:.1f}%"],
-            ["Fecha de generación", metrics["generated_at"]],
-        ], columns=["Métrica", "Valor"])
-        resumen.to_excel(writer, index=False, sheet_name="Resumen Ejecutivo")
-        dims = pd.DataFrame(metrics["dimensions"])
-        dims.to_excel(writer, index=False, sheet_name="Dimensiones")
-    output.seek(0)
-    return output
+def build_template_buffer():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Encuesta de Satisfacción"
+    ws.append(EXPECTED_COLUMNS)
+    ws.append([
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Muy satisfecho", 5,
+        "Satisfecho", 4,
+        "Muy satisfecho", 5,
+        "Muy satisfecho", 5,
+        "Muy satisfecho", 5,
+        24, 4.8, "Comentario de ejemplo",
+    ])
+    for column_cells in ws.columns:
+        length = max(len(str(cell.value or "")) for cell in column_cells)
+        ws.column_dimensions[column_cells[0].column_letter].width = min(max(length + 2, 12), 36)
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+# -----------------------------------------------------------------------------
+# Generador PDF minimalista sin pandas, numpy, matplotlib ni reportlab.
+# -----------------------------------------------------------------------------
+
+def pdf_escape(text):
+    text = str(text or "")
+    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
 
-@app.route("/", methods=["GET"])
+def hex_to_rgb(hex_color):
+    h = hex_color.strip().lstrip("#")
+    return tuple(int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
+
+
+def wrap_text(text, max_chars):
+    words = str(text or "").split()
+    lines = []
+    current = ""
+    for word in words:
+        if len(current) + len(word) + 1 <= max_chars:
+            current = (current + " " + word).strip()
+        else:
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def parse_png_rgb(path):
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("No es PNG")
+    pos = 8
+    width = height = bit_depth = color_type = None
+    compressed = b""
+    while pos < len(data):
+        length = int.from_bytes(data[pos:pos+4], "big")
+        chunk_type = data[pos+4:pos+8]
+        chunk_data = data[pos+8:pos+8+length]
+        pos += 12 + length
+        if chunk_type == b"IHDR":
+            width = int.from_bytes(chunk_data[0:4], "big")
+            height = int.from_bytes(chunk_data[4:8], "big")
+            bit_depth = chunk_data[8]
+            color_type = chunk_data[9]
+        elif chunk_type == b"IDAT":
+            compressed += chunk_data
+        elif chunk_type == b"IEND":
+            break
+    if bit_depth != 8 or color_type not in (2, 6):
+        raise ValueError("PNG no soportado para incrustación")
+    raw = zlib.decompress(compressed)
+    bpp = 4 if color_type == 6 else 3
+    stride = width * bpp
+    rows = []
+    i = 0
+    prev = bytearray(stride)
+
+    def paeth(a, b, c):
+        p = a + b - c
+        pa = abs(p - a)
+        pb = abs(p - b)
+        pc = abs(p - c)
+        if pa <= pb and pa <= pc:
+            return a
+        if pb <= pc:
+            return b
+        return c
+
+    for _ in range(height):
+        filt = raw[i]
+        i += 1
+        scan = bytearray(raw[i:i+stride])
+        i += stride
+        recon = bytearray(stride)
+        for x in range(stride):
+            left = recon[x-bpp] if x >= bpp else 0
+            up = prev[x]
+            up_left = prev[x-bpp] if x >= bpp else 0
+            val = scan[x]
+            if filt == 0:
+                recon[x] = val
+            elif filt == 1:
+                recon[x] = (val + left) & 0xFF
+            elif filt == 2:
+                recon[x] = (val + up) & 0xFF
+            elif filt == 3:
+                recon[x] = (val + ((left + up) // 2)) & 0xFF
+            elif filt == 4:
+                recon[x] = (val + paeth(left, up, up_left)) & 0xFF
+            else:
+                raise ValueError("Filtro PNG no soportado")
+        rows.append(recon)
+        prev = recon
+    rgb = bytearray()
+    if color_type == 6:
+        for row in rows:
+            for x in range(0, len(row), 4):
+                r, g, b, a = row[x], row[x+1], row[x+2], row[x+3]
+                alpha = a / 255
+                # Se aplana sobre fondo blanco para mantener compatibilidad PDF simple.
+                rgb.extend([int(r * alpha + 255 * (1 - alpha)), int(g * alpha + 255 * (1 - alpha)), int(b * alpha + 255 * (1 - alpha))])
+    else:
+        for row in rows:
+            rgb.extend(row)
+    return width, height, bytes(rgb)
+
+
+class SimplePDF:
+    def __init__(self):
+        self.objects = [None]
+        self.catalog_id = self.reserve()
+        self.pages_id = self.reserve()
+        self.font_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+        self.font_bold_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+        self.pages = []
+        self.images = {}
+
+    def reserve(self):
+        self.objects.append(None)
+        return len(self.objects) - 1
+
+    def set_object(self, obj_id, data):
+        self.objects[obj_id] = data if isinstance(data, bytes) else data.encode("latin-1")
+
+    def add_object(self, data):
+        self.objects.append(data if isinstance(data, bytes) else data.encode("latin-1"))
+        return len(self.objects) - 1
+
+    def add_image(self, name, path):
+        try:
+            width, height, rgb = parse_png_rgb(path)
+            comp = zlib.compress(rgb)
+            obj = (
+                f"<< /Type /XObject /Subtype /Image /Width {width} /Height {height} "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {len(comp)} >>\nstream\n"
+            ).encode("latin-1") + comp + b"\nendstream"
+            obj_id = self.add_object(obj)
+            self.images[name] = {"id": obj_id, "width": width, "height": height}
+        except Exception:
+            pass
+
+    def add_page(self, commands):
+        content_bytes = "\n".join(commands).encode("latin-1", "replace")
+        content_id = self.add_object(f"<< /Length {len(content_bytes)} >>\nstream\n".encode("latin-1") + content_bytes + b"\nendstream")
+        page_id = self.reserve()
+        xobjects = " ".join(f"/{name} {info['id']} 0 R" for name, info in self.images.items())
+        xobject_part = f" /XObject << {xobjects} >>" if xobjects else ""
+        page = (
+            f"<< /Type /Page /Parent {self.pages_id} 0 R /MediaBox [0 0 595 842] "
+            f"/Resources << /Font << /F1 {self.font_id} 0 R /F2 {self.font_bold_id} 0 R >>{xobject_part} >> "
+            f"/Contents {content_id} 0 R >>"
+        )
+        self.set_object(page_id, page)
+        self.pages.append(page_id)
+
+    def finish(self):
+        kids = " ".join(f"{pid} 0 R" for pid in self.pages)
+        self.set_object(self.pages_id, f"<< /Type /Pages /Kids [ {kids} ] /Count {len(self.pages)} >>")
+        self.set_object(self.catalog_id, f"<< /Type /Catalog /Pages {self.pages_id} 0 R >>")
+        out = io.BytesIO()
+        out.write(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+        offsets = [0]
+        for idx in range(1, len(self.objects)):
+            offsets.append(out.tell())
+            out.write(f"{idx} 0 obj\n".encode("latin-1"))
+            out.write(self.objects[idx] or b"")
+            out.write(b"\nendobj\n")
+        xref = out.tell()
+        out.write(f"xref\n0 {len(self.objects)}\n".encode("latin-1"))
+        out.write(b"0000000000 65535 f \n")
+        for off in offsets[1:]:
+            out.write(f"{off:010d} 00000 n \n".encode("latin-1"))
+        out.write(f"trailer\n<< /Size {len(self.objects)} /Root {self.catalog_id} 0 R >>\nstartxref\n{xref}\n%%EOF".encode("latin-1"))
+        out.seek(0)
+        return out
+
+
+def cmd_set_fill(color):
+    r, g, b = hex_to_rgb(color)
+    return f"{r:.3f} {g:.3f} {b:.3f} rg"
+
+
+def cmd_set_stroke(color):
+    r, g, b = hex_to_rgb(color)
+    return f"{r:.3f} {g:.3f} {b:.3f} RG"
+
+
+def rect(x, y, w, h, color):
+    return [cmd_set_fill(color), f"{x:.1f} {y:.1f} {w:.1f} {h:.1f} re f"]
+
+
+def line(x1, y1, x2, y2, color="#dddddd", width=1):
+    return [cmd_set_stroke(color), f"{width:.1f} w", f"{x1:.1f} {y1:.1f} m {x2:.1f} {y2:.1f} l S"]
+
+
+def text(x, y, value, size=10, color="#303030", bold=False):
+    r, g, b = hex_to_rgb(color)
+    font = "/F2" if bold else "/F1"
+    return f"BT {r:.3f} {g:.3f} {b:.3f} rg {font} {size:.1f} Tf {x:.1f} {y:.1f} Td ({pdf_escape(value)}) Tj ET"
+
+
+def image_cmd(name, x, y, w, h):
+    return f"q {w:.1f} 0 0 {h:.1f} {x:.1f} {y:.1f} cm /{name} Do Q"
+
+
+def pdf_header(cmds, pdf):
+    if "LogoA" in pdf.images:
+        cmds.append(image_cmd("LogoA", 42, 790, 115, 29))
+    else:
+        cmds.append(text(42, 804, "aramark", 16, RED, True))
+    if "LogoB" in pdf.images:
+        cmds.append(image_cmd("LogoB", 315, 790, 235, 21))
+    else:
+        cmds.append(text(360, 804, "ESCONDIDA | BHP", 15, "#f58220", True))
+    cmds.extend(line(42, 778, 553, 778, RED, 2.5))
+
+
+def draw_section(cmds, y, title):
+    cmds.extend(rect(42, y - 4, 511, 24, RED))
+    cmds.append(text(50, y + 3, title, 11, "#ffffff", True))
+    return y - 36
+
+
+def draw_kpi_cards(cmds, y, metrics):
+    cards = [
+        ("TOTAL DE EVALUACIONES", str(metrics["total"]), "Muestra Histórica"),
+        ("SATISFACCIÓN GLOBAL", f"{metrics['global_score']:.2f} / 5.0", metrics["global_status"]),
+        ("ÍNDICE DE EXCELENCIA", f"{metrics['excelencia']:.1f}%", "Usuarios Promotores"),
+    ]
+    x = 42
+    w = 158
+    for label, value, note in cards:
+        cmds.extend(rect(x, y - 72, w, 62, "#fff8f9"))
+        cmds.extend(line(x, y - 10, x + w, y - 10, RED, 2))
+        cmds.append(text(x + 12, y - 29, label, 7.5, "#666666", True))
+        cmds.append(text(x + 46, y - 52, value, 18, "#222222", True))
+        cmds.append(text(x + 20, y - 66, note, 7, "#2f7d32", True))
+        x += 176
+    return y - 88
+
+
+def draw_table(cmds, x, y, headers, rows, col_widths, row_h=18, max_rows=None):
+    max_rows = max_rows or len(rows)
+    total_w = sum(col_widths)
+    cmds.extend(rect(x, y - row_h, total_w, row_h, "#f1f1f1"))
+    cx = x
+    for header, cw in zip(headers, col_widths):
+        cmds.append(text(cx + 4, y - 13, header, 7.2, "#444444", True))
+        cx += cw
+    yy = y - row_h
+    for row in rows[:max_rows]:
+        yy -= row_h
+        cmds.extend(line(x, yy + row_h, x + total_w, yy + row_h, "#dddddd", 0.4))
+        cx = x
+        for val, cw in zip(row, col_widths):
+            shown = str(val or "")
+            if len(shown) > int(cw / 4.4):
+                shown = shown[: int(cw / 4.4) - 1] + "…"
+            cmds.append(text(cx + 4, yy + 5, shown, 7.4, "#303030", False))
+            cx += cw
+    cmds.extend(line(x, yy, x + total_w, yy, "#dddddd", 0.4))
+    return yy - 18
+
+
+def draw_comments_and_analysis(cmds, y, metrics):
+    cmds.append(text(42, y, "Comentarios Recientes Destacados", 10.5, RED, True))
+    cmds.append(text(308, y, "Análisis Cualitativo", 10.5, RED, True))
+    y0 = y - 18
+    left_y = y0
+    for comment in metrics["comments"][:4]:
+        cmds.extend(line(42, left_y + 8, 42, left_y - 34, RED, 2.5))
+        lines = wrap_text(comment, 45)[:3]
+        ty = left_y
+        for ln in lines:
+            cmds.append(text(50, ty, f"\"{ln}", 7.6, "#555555"))
+            ty -= 10
+        left_y -= 46
+    if not metrics["comments"]:
+        cmds.append(text(42, left_y, "Sin comentarios registrados.", 8, "#777777"))
+    right_y = y0
+    for item in metrics["analysis"][:5]:
+        cmds.extend(rect(308, right_y - 2, 3, 3, RED))
+        for ln in wrap_text(item, 52)[:3]:
+            cmds.append(text(316, right_y, ln, 7.6, "#303030"))
+            right_y -= 10
+        right_y -= 8
+    return min(left_y, right_y) - 4
+
+
+def draw_trend_chart(cmds, x, y, w, h, labels, values):
+    cmds.extend(line(x, y, x, y + h, "#999999", 0.8))
+    cmds.extend(line(x, y, x + w, y, "#999999", 0.8))
+    for i in range(1, 5):
+        gy = y + h * i / 4
+        cmds.extend(line(x, gy, x + w, gy, "#e5e5e5", 0.3))
+    if values:
+        pts = []
+        for idx, val in enumerate(values):
+            px = x + (w * idx / max(len(values) - 1, 1))
+            py = y + ((float(val) - 1) / 4) * h
+            pts.append((px, py))
+        cmds.append(cmd_set_stroke(RED))
+        cmds.append("2 w")
+        path = f"{pts[0][0]:.1f} {pts[0][1]:.1f} m " + " ".join(f"{px:.1f} {py:.1f} l" for px, py in pts[1:]) + " S"
+        cmds.append(path)
+        for idx, (px, py) in enumerate(pts):
+            cmds.append(cmd_set_fill(RED))
+            cmds.append(f"{px:.1f} {py:.1f} 3.2 0 360 arc f")
+            cmds.append(text(px - 8, py + 10, f"{values[idx]:.2f}", 7, "#303030"))
+    cmds.append(text(x - 25, y + h + 2, "5.0", 7, "#666666"))
+    cmds.append(text(x - 25, y - 2, "1.0", 7, "#666666"))
+
+
+def draw_radar_chart(cmds, cx, cy, radius, labels, values):
+    n = len(values) or 5
+    angles = [-math.pi / 2 + i * 2 * math.pi / n for i in range(n)]
+    for level in range(1, 6):
+        r = radius * level / 5
+        pts = [(cx + math.cos(a) * r, cy + math.sin(a) * r) for a in angles]
+        cmds.append(cmd_set_stroke("#dddddd"))
+        cmds.append("0.5 w")
+        cmds.append(f"{pts[0][0]:.1f} {pts[0][1]:.1f} m " + " ".join(f"{x:.1f} {y:.1f} l" for x, y in pts[1:]) + " h S")
+    pts = [(cx + math.cos(a) * radius * (float(v) / 5), cy + math.sin(a) * radius * (float(v) / 5)) for a, v in zip(angles, values)]
+    cmds.append(cmd_set_stroke(RED))
+    cmds.append("1.8 w")
+    if pts:
+        cmds.append(f"{pts[0][0]:.1f} {pts[0][1]:.1f} m " + " ".join(f"{x:.1f} {y:.1f} l" for x, y in pts[1:]) + " h S")
+    for a, label in zip(angles, labels):
+        lx = cx + math.cos(a) * (radius + 20)
+        ly = cy + math.sin(a) * (radius + 14)
+        cmds.append(text(lx - 25, ly, label[:14], 6.5, "#555555"))
+
+
+def generate_pdf_report(metrics):
+    pdf = SimplePDF()
+    pdf.add_image("LogoA", LOGO_ARAMARK_PATH)
+    pdf.add_image("LogoB", LOGO_BHP_PATH)
+
+    cmds = []
+    pdf_header(cmds, pdf)
+    cmds.append(text(42, 742, "REPORTE EJECUTIVO DE CALIDAD", 18, "#202020", True))
+    cmds.append(text(42, 724, "Evaluación de Satisfacción e Impacto del Factor Humano en la Operación", 10, "#666666"))
+    y = draw_section(cmds, 690, "1. Resumen Ejecutivo (Macrométricas)")
+    y = draw_kpi_cards(cmds, y, metrics)
+    y = draw_section(cmds, y, "2. Distribución del Riesgo Operativo")
+    risk_rows = [[r["categoria"], r["criterio"], r["volumen"], r["representacion"]] for r in metrics["risk"]]
+    y = draw_table(cmds, 42, y, ["CATEGORÍA DE USUARIO", "CRITERIO", "VOLUMEN", "REP."], risk_rows, [235, 95, 80, 100], row_h=22)
+    y = draw_section(cmds, y, "3. La Voz del Usuario y Observaciones")
+    draw_comments_and_analysis(cmds, y, metrics)
+    cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
+    cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
+    pdf.add_page(cmds)
+
+    cmds = []
+    pdf_header(cmds, pdf)
+    cmds.append(text(42, 742, "ANÁLISIS DE TENDENCIAS Y DESGLOSE", 18, "#202020", True))
+    cmds.append(text(42, 724, "Monitoreo semanal de resultados operativos", 10, "#666666"))
+    y = draw_section(cmds, 690, "4. Evolución Histórica (Últimas 10 Semanas)")
+    draw_trend_chart(cmds, 70, y - 230, 455, 190, metrics["chart_labels"], metrics["chart_values"])
+    y = y - 260
+    y = draw_section(cmds, y, "5. Resumen Semanas Recientes")
+    recent_rows = [[r["periodo"], r["n_encuestas"], f"{r['promedio']:.2f}", r["estado"]] for r in metrics["recent_weeks"]]
+    y = draw_table(cmds, 42, y, ["SEMANA", "N° ENC.", "PROM.", "ESTADO / ACCIÓN"], recent_rows, [210, 75, 75, 150], row_h=22)
+    y = draw_section(cmds, y, f"6. Desempeño Específico por Dimensiones ({metrics['latest_label']})")
+    cmds.append(text(42, y + 10, "Una calificación por debajo de 4.70 se considera foco de atención preventivo.", 8.5, "#555555"))
+    draw_radar_chart(cmds, 175, y - 145, 85, metrics["radar_labels"], metrics["radar_values"])
+    dy = y - 60
+    for item in metrics["dimensions"]:
+        color = RED if item["foco"] else "#2f7d32"
+        score = "-" if item["score"] is None else f"{item['score']:.2f}" + (" (Foco)" if item["foco"] else "")
+        cmds.extend(rect(330, dy - 1, 4, 4, RED))
+        cmds.append(text(340, dy, item["label"], 8.5, "#303030", True))
+        cmds.append(text(505, dy, score, 8.5, color, True))
+        dy -= 20
+    cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
+    cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
+    pdf.add_page(cmds)
+    return pdf.finish()
+
+
+@app.context_processor
+def inject_helpers():
+    return {"json_dumps": json.dumps, "status_class": status_class}
+
+
+@app.route("/")
 def dashboard():
-    df = load_data()
-    metrics = build_metrics(df)
+    data = load_data()
+    metrics = build_metrics(data)
     return render_template("dashboard.html", title=APP_TITLE, metrics=metrics)
 
 
 @app.route("/importar", methods=["POST"])
 def importar():
-    uploaded = request.files.get("archivo")
-    mode = request.form.get("modo", "replace")
-    if not uploaded or not uploaded.filename:
-        flash("Selecciona un archivo Excel para importar.", "error")
+    archivo = request.files.get("archivo")
+    modo = request.form.get("modo", "replace")
+    if not archivo or archivo.filename == "":
+        flash("Debes seleccionar un archivo Excel.", "error")
         return redirect(url_for("dashboard"))
     try:
-        df = read_uploaded_workbook(uploaded)
-        count = save_dataframe(df, mode=mode)
-        accion = "reemplazados" if mode == "replace" else "agregados"
-        flash(f"Importación exitosa: {count} registros {accion}.", "success")
+        records = read_uploaded_workbook(archivo)
+        count = save_records(records, mode=modo)
+        flash(f"Importación exitosa: {count} registros procesados.", "success")
     except Exception as exc:
         flash(f"Error al importar: {exc}", "error")
     return redirect(url_for("dashboard"))
 
 
-@app.route("/exportar/pdf")
-def exportar_pdf():
-    df = load_data()
-    if df.empty:
-        flash("No hay datos para exportar.", "error")
-        return redirect(url_for("dashboard"))
-    pdf = generate_pdf_report(df)
-    return send_file(pdf, as_attachment=True, download_name="reporte_encuesta_satisfaccion_5400.pdf", mimetype="application/pdf")
-
-
-@app.route("/exportar/excel")
-def exportar_excel():
-    df = load_data()
-    if df.empty:
-        flash("No hay datos para exportar.", "error")
-        return redirect(url_for("dashboard"))
-    output = build_export_workbook(df)
-    return send_file(output, as_attachment=True, download_name="export_encuesta_satisfaccion_5400.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+@app.route("/plantilla")
+def plantilla():
+    buffer = build_template_buffer()
+    return send_file(buffer, as_attachment=True, download_name="plantilla_encuesta_satisfaccion_5400.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/exportar/csv")
 def exportar_csv():
-    df = load_data()
-    if df.empty:
+    data = load_data()
+    content = export_csv_buffer(data)
+    return Response(content, mimetype="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=encuesta_satisfaccion_5400.csv"})
+
+
+@app.route("/exportar/excel")
+def exportar_excel():
+    data = load_data()
+    metrics = build_metrics(data)
+    buffer = build_excel_buffer(data, metrics)
+    return send_file(buffer, as_attachment=True, download_name="reporte_encuesta_satisfaccion_5400.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/exportar/pdf")
+def exportar_pdf():
+    data = load_data()
+    metrics = build_metrics(data)
+    if not metrics["has_data"]:
         flash("No hay datos para exportar.", "error")
         return redirect(url_for("dashboard"))
-    raw = df.copy()
-    raw["fecha"] = raw["fecha"].dt.strftime("%Y-%m-%d %H:%M:%S")
-    output = io.StringIO()
-    raw.to_csv(output, index=False, quoting=csv.QUOTE_MINIMAL)
-    return Response(output.getvalue(), mimetype="text/csv", headers={"Content-Disposition": "attachment; filename=export_encuesta_satisfaccion_5400.csv"})
+    buffer = generate_pdf_report(metrics)
+    return send_file(buffer, as_attachment=True, download_name="reporte_encuesta_satisfaccion_5400.pdf", mimetype="application/pdf")
 
 
-@app.route("/plantilla")
-def plantilla():
-    output = io.BytesIO()
-    sample = pd.DataFrame(columns=EXPECTED_COLUMNS)
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        sample.to_excel(writer, index=False, sheet_name="Encuesta de Satisfacción")
-    output.seek(0)
-    return send_file(output, as_attachment=True, download_name="plantilla_encuesta_satisfaccion_5400.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
-@app.context_processor
-def inject_helpers():
-    return {
-        "json_dumps": lambda obj: json.dumps(obj, ensure_ascii=False),
-        "status_class": lambda s: "ok" if s == "Mantener estándar" else ("warn" if s == "Seguimiento preventivo" else "danger"),
-    }
+@app.route("/health")
+def health():
+    return {"status": "ok", "app": APP_TITLE}
 
 
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
+    app.run(debug=True)

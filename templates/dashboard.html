@@ -7,7 +7,7 @@
   </div>
   <form class="import-card" action="{{ url_for('importar') }}" method="post" enctype="multipart/form-data">
     <label>Importar pestaña “Encuesta de Satisfacción”</label>
-    <input type="file" name="archivo" accept=".xlsx,.xls" required>
+    <input type="file" name="archivo" accept=".xlsx" required>
     <div class="row">
       <select name="modo">
         <option value="replace">Reemplazar datos actuales</option>
@@ -29,7 +29,7 @@
   </article>
   <article class="kpi-card">
     <span>SATISFACCIÓN GLOBAL</span>
-    <strong>{{ '%.2f'|format(metrics.global) }} <em>/ 5.0</em></strong>
+    <strong>{{ '%.2f'|format(metrics.global_score) }} <em>/ 5.0</em></strong>
     <small class="{{ status_class(metrics.global_status) }}">{{ metrics.global_status }}</small>
   </article>
   <article class="kpi-card">
@@ -149,8 +149,8 @@ new Chart(document.getElementById('trendChart'), {
     datasets: [{
       label: 'Promedio semanal',
       data: trendValues,
-      borderColor: '#d71920',
-      backgroundColor: 'rgba(215, 25, 32, 0.12)',
+      borderColor: '#ed1b2e',
+      backgroundColor: 'rgba(237, 27, 46, 0.12)',
       tension: 0.25,
       fill: false,
       pointRadius: 5,
@@ -171,9 +171,9 @@ new Chart(document.getElementById('radarChart'), {
     datasets: [{
       label: 'Promedio última semana',
       data: radarValues,
-      borderColor: '#d71920',
-      backgroundColor: 'rgba(215, 25, 32, 0.20)',
-      pointBackgroundColor: '#d71920'
+      borderColor: '#ed1b2e',
+      backgroundColor: 'rgba(237, 27, 46, 0.20)',
+      pointBackgroundColor: '#ed1b2e'
     }]
   },
   options: {
