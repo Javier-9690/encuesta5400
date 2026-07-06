@@ -9,8 +9,12 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="star">★</span> aramark</div>
-    <div class="camp">Aramark Campamento 5400</div>
+    <div class="brand">
+      <img src="{{ url_for('static', filename='img/logo_aramark.png') }}" alt="Aramark">
+    </div>
+    <div class="camp">
+      <img src="{{ url_for('static', filename='img/logo_campamento_5400.png') }}" alt="Aramark Campamento 5400">
+    </div>
   </header>
   <main class="container">
     {% with messages = get_flashed_messages(with_categories=true) %}

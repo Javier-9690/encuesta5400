@@ -27,6 +27,10 @@ from reportlab.platypus import (
 from werkzeug.utils import secure_filename
 
 APP_TITLE = "Dashboard Encuesta de Satisfacción - Campamento 5400"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+LOGO_ARAMARK_PATH = os.path.join(STATIC_DIR, "img", "logo_aramark.png")
+LOGO_CAMPAMENTO_PATH = os.path.join(STATIC_DIR, "img", "logo_campamento_5400.png")
 DB_PATH = os.environ.get("DATABASE_PATH", "/var/data/encuesta_5400.db")
 if not os.path.exists(os.path.dirname(DB_PATH)):
     DB_PATH = os.path.join(os.path.dirname(__file__), "encuesta_5400.db")
@@ -433,7 +437,7 @@ def table_style(header_bg="#303030"):
 
 def section_title(text):
     return Table([[text]], colWidths=[17.0 * cm], style=TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#303030")),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#d71920")),
         ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
         ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 12),
@@ -447,13 +451,23 @@ def header_footer(canvas, doc):
     canvas.saveState()
     width, height = A4
     canvas.setStrokeColor(colors.HexColor("#d71920"))
-    canvas.setLineWidth(1.5)
+    canvas.setLineWidth(2.0)
     canvas.line(2 * cm, height - 2.15 * cm, width - 2 * cm, height - 2.15 * cm)
-    canvas.setFont("Helvetica-Bold", 13)
-    canvas.setFillColor(colors.black)
-    canvas.drawString(2 * cm, height - 1.55 * cm, "★ aramark")
-    canvas.setFillColor(colors.HexColor("#d71920"))
-    canvas.drawRightString(width - 2 * cm, height - 1.55 * cm, "Aramark Campamento 5400")
+
+    if os.path.exists(LOGO_ARAMARK_PATH):
+        canvas.drawImage(LOGO_ARAMARK_PATH, 2 * cm, height - 1.75 * cm, width=3.0 * cm, height=0.55 * cm, preserveAspectRatio=True, mask="auto")
+    else:
+        canvas.setFont("Helvetica-Bold", 13)
+        canvas.setFillColor(colors.black)
+        canvas.drawString(2 * cm, height - 1.55 * cm, "★ aramark")
+
+    if os.path.exists(LOGO_CAMPAMENTO_PATH):
+        canvas.drawImage(LOGO_CAMPAMENTO_PATH, width - 7.8 * cm, height - 1.72 * cm, width=5.8 * cm, height=0.50 * cm, preserveAspectRatio=True, mask="auto")
+    else:
+        canvas.setFont("Helvetica-Bold", 13)
+        canvas.setFillColor(colors.HexColor("#d71920"))
+        canvas.drawRightString(width - 2 * cm, height - 1.55 * cm, "Aramark Campamento 5400")
+
     canvas.setFont("Helvetica", 7)
     canvas.setFillColor(colors.HexColor("#999999"))
     canvas.line(2 * cm, 1.35 * cm, width - 2 * cm, 1.35 * cm)

@@ -1,5 +1,7 @@
 :root {
   --red: #d71920;
+  --red-dark: #a90f17;
+  --red-soft: #fff1f2;
   --dark: #303030;
   --text: #303030;
   --muted: #707070;
@@ -16,27 +18,41 @@ body {
   margin: 0;
   font-family: Arial, Helvetica, sans-serif;
   color: var(--text);
-  background: var(--bg);
+  background:
+    linear-gradient(180deg, #fff7f8 0%, #f4f4f4 240px);
 }
 .topbar {
   width: min(1120px, calc(100% - 32px));
   margin: 22px auto 0;
-  padding: 18px 0 24px;
+  padding: 18px 28px 24px;
+  border-top: 6px solid var(--red);
   border-bottom: 4px solid var(--red);
   display: flex;
   justify-content: space-between;
   align-items: center;
   background: #fff;
-  padding-inline: 28px;
+  box-shadow: 0 8px 24px rgba(215, 25, 32, 0.08);
 }
-.brand { font-size: 26px; font-weight: 800; color: #111; letter-spacing: -1px; }
-.star { color: var(--red); font-size: 24px; margin-right: 5px; }
-.camp { color: var(--red); font-size: 22px; font-weight: 800; }
+.brand img {
+  display: block;
+  height: 38px;
+  width: auto;
+}
+.camp img {
+  display: block;
+  max-height: 34px;
+  max-width: 430px;
+  width: auto;
+}
+.brand { min-width: 210px; }
+.camp { display: flex; justify-content: flex-end; align-items: center; }
 .container {
   width: min(1120px, calc(100% - 32px));
   margin: 0 auto 28px;
   background: #fff;
   padding: 34px 28px 42px;
+  border-left: 1px solid #f1d7d9;
+  border-right: 1px solid #f1d7d9;
 }
 .hero {
   display: grid;
@@ -49,13 +65,22 @@ h1 {
   margin: 0 0 4px;
   font-size: 34px;
   letter-spacing: -0.6px;
+  color: #202020;
+}
+h1::after {
+  content: "";
+  display: block;
+  width: 140px;
+  height: 4px;
+  margin-top: 12px;
+  background: var(--red);
 }
 .hero p { margin: 0; color: var(--muted); font-size: 17px; }
 .import-card {
   border: 1px solid var(--line);
   border-top: 4px solid var(--red);
   padding: 16px;
-  background: #fbfbfb;
+  background: var(--red-soft);
   display: grid;
   gap: 10px;
 }
@@ -80,10 +105,11 @@ button, .btn {
   text-align: center;
   cursor: pointer;
 }
-.btn.secondary { background: var(--dark); }
+.btn.secondary { background: var(--red-dark); }
+button:hover, .btn:hover { filter: brightness(0.94); }
 .actions { display: flex; gap: 10px; margin: 18px 0 26px; flex-wrap: wrap; }
 .section-title {
-  background: var(--dark);
+  background: linear-gradient(90deg, var(--red), var(--red-dark));
   color: #fff;
   font-weight: 800;
   padding: 12px 16px;
@@ -96,8 +122,9 @@ button, .btn {
   gap: 32px;
 }
 .kpi-card {
-  background: #f7f7f7;
+  background: #fffafa;
   border-top: 4px solid var(--red);
+  border-bottom: 1px solid #f0c9cc;
   text-align: center;
   padding: 19px 12px 16px;
   min-height: 118px;
@@ -198,9 +225,12 @@ blockquote {
 }
 
 @media (max-width: 860px) {
-  .topbar, .hero, .two-col, .kpi-grid { grid-template-columns: 1fr; }
+  .hero, .two-col, .kpi-grid { grid-template-columns: 1fr; }
   .topbar { display: block; }
-  .camp { margin-top: 8px; }
+  .brand { min-width: 0; }
+  .brand img { height: 32px; }
+  .camp { justify-content: flex-start; margin-top: 12px; }
+  .camp img { max-width: 100%; max-height: 28px; }
   h1 { font-size: 27px; }
   .row { grid-template-columns: 1fr; }
 }

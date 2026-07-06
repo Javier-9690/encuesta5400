@@ -2,6 +2,11 @@
 
 Aplicación Flask lista para publicar en Render. Permite importar el archivo Excel del KPI, leer automáticamente la pestaña **Encuesta de Satisfacción**, calcular métricas ejecutivas y exportar el resultado a PDF, Excel o CSV.
 
+
+## Identidad visual
+
+Esta versión incluye los logos extraídos del reporte Aramark Campamento 5400 y una línea gráfica roja aplicada al encabezado, botones, tarjetas KPI, secciones, gráficos y PDF exportable.
+
 ## Funciones principales
 
 - Importación de Excel `.xlsx` / `.xls`.
