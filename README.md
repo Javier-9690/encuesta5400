@@ -86,3 +86,10 @@ http://localhost:5000
 ## Nota operacional
 
 El archivo PDF exportado se genera con los datos ya importados en la aplicación. Si se sube un nuevo Excel en modo "Reemplazar", se elimina el histórico anterior y el dashboard queda construido solo con el nuevo archivo.
+
+
+## Corrección para Render: Python 3.14
+
+Este proyecto incluye `.python-version`, `runtime.txt` y la variable `PYTHON_VERSION=3.12.7` en `render.yaml`. Esto evita que Render use Python 3.14 por defecto, porque algunas dependencias de análisis como `pandas` todavía pueden intentar compilarse desde código fuente y fallar en esa versión.
+
+Si Render ya creó el servicio antes de esta corrección, vuelve a subir estos archivos al repositorio, haz commit/push y ejecuta **Manual Deploy > Clear build cache & deploy**.
