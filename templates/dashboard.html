@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <h1>REPORTE EJECUTIVO DE CALIDAD</h1>
+    <p>Evaluación de Satisfacción e Impacto del Factor Humano en la Operación</p>
+  </div>
+  <form class="import-card" action="{{ url_for('importar') }}" method="post" enctype="multipart/form-data">
+    <label>Importar pestaña “Encuesta de Satisfacción”</label>
+    <input type="file" name="archivo" accept=".xlsx,.xls" required>
+    <div class="row">
+      <select name="modo">
+        <option value="replace">Reemplazar datos actuales</option>
+        <option value="append">Agregar al histórico</option>
+      </select>
+      <button type="submit">Importar</button>
+    </div>
+    <a href="{{ url_for('plantilla') }}">Descargar plantilla</a>
+  </form>
+</section>
+
+{% if metrics.has_data %}
+<section class="section-title">1. Resumen Ejecutivo (Macrométricas)</section>
+<section class="kpi-grid">
+  <article class="kpi-card">
+    <span>TOTAL DE EVALUACIONES</span>
+    <strong>{{ metrics.total }}</strong>
+    <small>Muestra Histórica</small>
+  </article>
+  <article class="kpi-card">
+    <span>SATISFACCIÓN GLOBAL</span>
+    <strong>{{ '%.2f'|format(metrics.global) }} <em>/ 5.0</em></strong>
+    <small class="{{ status_class(metrics.global_status) }}">{{ metrics.global_status }}</small>
+  </article>
+  <article class="kpi-card">
+    <span>ÍNDICE DE EXCELENCIA</span>
+    <strong>{{ '%.1f'|format(metrics.excelencia) }}%</strong>
+    <small>Usuarios Promotores</small>
+  </article>
+</section>
+
+<section class="actions">
+  <a class="btn" href="{{ url_for('exportar_pdf') }}">Exportar PDF</a>
+  <a class="btn secondary" href="{{ url_for('exportar_excel') }}">Exportar Excel</a>
+  <a class="btn secondary" href="{{ url_for('exportar_csv') }}">Exportar CSV</a>
+</section>
+
+<section class="section-title">2. Distribución del Riesgo Operativo</section>
+<div class="table-card">
+  <table>
+    <thead>
+      <tr>
+        <th>Categoría de usuario</th>
+        <th>Criterio (nota)</th>
+        <th>Volumen</th>
+        <th>Representación</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in metrics.risk %}
+      <tr>
+        <td><strong>{{ item.categoria }}</strong></td>
+        <td>{{ item.criterio }}</td>
+        <td>{{ item.volumen }}</td>
+        <td class="{{ item.kind }}"><strong>{{ item.representacion }}</strong></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<section class="section-title">3. La Voz del Usuario y Observaciones</section>
+<section class="two-col">
+  <div class="panel">
+    <h2>Comentarios Recientes Destacados</h2>
+    {% for comment in metrics.comments[:4] %}
+      <blockquote>“{{ comment }}”</blockquote>
+    {% else %}
+      <p class="muted">Sin comentarios registrados.</p>
+    {% endfor %}
+  </div>
+  <div class="panel">
+    <h2>Análisis Cualitativo</h2>
+    <ul class="analysis-list">
+      {% for item in metrics.analysis %}
+        <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>
+
+<section class="section-title">4. Evolución Histórica (Últimas 10 Semanas)</section>
+<div class="chart-card">
+  <canvas id="trendChart" height="130"></canvas>
+</div>
+
+<section class="section-title">5. Resumen Semanas Recientes</section>
+<div class="table-card">
+  <table>
+    <thead>
+      <tr>
+        <th>Semana</th>
+        <th>N° Encuestas</th>
+        <th>Nota Promedio</th>
+        <th>Estado / Acción</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in metrics.recent_weeks %}
+      <tr>
+        <td>{{ row.periodo }}</td>
+        <td>{{ row.n_encuestas }}</td>
+        <td><strong>{{ '%.2f'|format(row.promedio) }}</strong></td>
+        <td class="{{ status_class(row.estado) }}"><strong>{{ row.estado }}</strong></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<section class="section-title">6. Desempeño Específico por Dimensiones ({{ metrics.latest_label }})</section>
+<p class="note">Una calificación por debajo de 4.70 se considera foco de atención preventivo.</p>
+<section class="two-col radar-layout">
+  <div class="chart-card">
+    <canvas id="radarChart" height="260"></canvas>
+  </div>
+  <div class="panel dimensions">
+    {% for item in metrics.dimensions %}
+      <div class="dimension-row">
+        <span>{{ item.label }}</span>
+        <strong class="{{ 'danger' if item.foco else 'ok' }}">
+          {{ '-' if item.score is none else '%.2f'|format(item.score) }}{% if item.foco %} (Foco){% endif %}
+        </strong>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<script>
+const trendLabels = {{ json_dumps(metrics.chart_labels) | safe }};
+const trendValues = {{ json_dumps(metrics.chart_values) | safe }};
+const radarLabels = {{ json_dumps(metrics.radar_labels) | safe }};
+const radarValues = {{ json_dumps(metrics.radar_values) | safe }};
+
+new Chart(document.getElementById('trendChart'), {
+  type: 'line',
+  data: {
+    labels: trendLabels,
+    datasets: [{
+      label: 'Promedio semanal',
+      data: trendValues,
+      borderColor: '#d71920',
+      backgroundColor: 'rgba(215, 25, 32, 0.12)',
+      tension: 0.25,
+      fill: false,
+      pointRadius: 5,
+      pointHoverRadius: 7
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: { y: { min: 1, max: 5, ticks: { stepSize: 0.5 } } }
+  }
+});
+
+new Chart(document.getElementById('radarChart'), {
+  type: 'radar',
+  data: {
+    labels: radarLabels,
+    datasets: [{
+      label: 'Promedio última semana',
+      data: radarValues,
+      borderColor: '#d71920',
+      backgroundColor: 'rgba(215, 25, 32, 0.20)',
+      pointBackgroundColor: '#d71920'
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: { r: { min: 0, max: 5, ticks: { stepSize: 1 } } }
+  }
+});
+</script>
+{% else %}
+<section class="empty-state">
+  <h2>Sin datos importados</h2>
+  <p>Sube el Excel que contiene la pestaña <strong>Encuesta de Satisfacción</strong>. La aplicación calculará automáticamente el resumen ejecutivo, riesgo operativo, tendencia semanal, comentarios y dimensiones Q1 a Q5.</p>
+</section>
+{% endif %}
+{% endblock %}

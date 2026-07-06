@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: encuesta-satisfaccion-5400
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_PATH
+        value: /var/data/encuesta_5400.db
+    disk:
+      name: encuesta-5400-data
+      mountPath: /var/data
+      sizeGB: 1
