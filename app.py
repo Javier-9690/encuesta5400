@@ -296,23 +296,26 @@ def pct(part, total):
     return f"{pct_number(part, total):.1f}%"
 
 
+CUMPLIMIENTO_TARGET = 4.5
+
+
 def cumplimiento_from_score(score):
-    """Cumplimiento: promedio >= 4.0 equivale a 100%. Bajo 4.0, se calcula proporcionalmente contra el umbral 4.0."""
+    """Cumplimiento: promedio >= 4.5 equivale a 100%. Bajo 4.5, se calcula proporcionalmente contra el umbral 4.5."""
     if score is None:
         return 0.0
     try:
         value = float(score)
     except (TypeError, ValueError):
         return 0.0
-    if value >= 4.0:
+    if value >= CUMPLIMIENTO_TARGET:
         return 100.0
-    return round(max(0.0, min(100.0, (value / 4.0) * 100.0)), 1)
+    return round(max(0.0, min(100.0, (value / CUMPLIMIENTO_TARGET) * 100.0)), 1)
 
 
 def cumple_umbral(score):
-    """Verdadero cuando la evaluación cumple el umbral operativo de nota 4.0."""
+    """Verdadero cuando la evaluación cumple el umbral operativo de nota 4.5."""
     try:
-        return float(score) >= 4.0
+        return float(score) >= CUMPLIMIENTO_TARGET
     except (TypeError, ValueError):
         return False
 
@@ -431,8 +434,8 @@ def build_metrics(data):
     no_cumplen = total - cumplen
 
     risk = [
-        {"categoria": "Cumple estándar operativo", "criterio": "Promedio >= 4.0", "volumen": cumplen, "representacion": pct(cumplen, total), "kind": "ok"},
-        {"categoria": "No cumple estándar operativo", "criterio": "Promedio < 4.0", "volumen": no_cumplen, "representacion": pct(no_cumplen, total), "kind": "danger"},
+        {"categoria": "Cumple estándar operativo", "criterio": "Promedio >= 4.5", "volumen": cumplen, "representacion": pct(cumplen, total), "kind": "ok"},
+        {"categoria": "No cumple estándar operativo", "criterio": "Promedio < 4.5", "volumen": no_cumplen, "representacion": pct(no_cumplen, total), "kind": "danger"},
     ]
 
     comments = [item.get("comentarios", "") for item in sorted(data, key=lambda r: r["fecha_dt"], reverse=True) if item.get("comentarios", "").strip()][:6]
@@ -464,10 +467,10 @@ def build_metrics(data):
         else:
             analysis.append(f"Sin foco crítico: la dimensión más baja es {worst['label']} con {worst['score']:.2f}.")
     if no_cumplen > 0:
-        analysis.append(f"Cumplimiento operativo: {no_cumplen} evaluaciones están bajo 4.0 y requieren revisión cualitativa.")
+        analysis.append(f"Cumplimiento operativo: {no_cumplen} evaluaciones están bajo 4.5 y requieren revisión cualitativa.")
     if comments:
         analysis.append("La revisión de comentarios recientes permite identificar causas operativas específicas detrás de los puntajes.")
-    analysis.append(f"Cumplimiento: {cumplimiento:.1f}% según regla operativa promedio >= 4.0 equivale a 100%.")
+    analysis.append(f"Cumplimiento: {cumplimiento:.1f}% según regla operativa promedio >= 4.5 equivale a 100%.")
 
     return {
         "has_data": True,
@@ -528,8 +531,8 @@ def add_summary_sheets(wb, metrics, suffix=""):
     ws5.append(["Satisfacción global", metrics.get("global_score", 0)])
     ws5.append(["Cumplimiento", metrics.get("cumplimiento", 0)])
     ws5.append(["Índice de excelencia", metrics.get("excelencia", 0)])
-    ws5.append(["Regla de cumplimiento", "Promedio >= 4.0 equivale a 100%"])
-    ws5.append(["Distribución de cumplimiento", "Cumple estándar operativo: promedio >= 4.0 / No cumple: promedio < 4.0"])
+    ws5.append(["Regla de cumplimiento", "Promedio >= 4.5 equivale a 100%"])
+    ws5.append(["Distribución de cumplimiento", "Cumple estándar operativo: promedio >= 4.5 / No cumple: promedio < 4.5"])
     ws5.append(["Estructura semanal", WEEK_RULE_NOTE])
 
 
@@ -906,7 +909,7 @@ def draw_kpi_cards(cmds, y, metrics):
     cards = [
         ("TOTAL DE EVALUACIONES", str(metrics["total"]), "Muestra analizada"),
         ("SATISFACCIÓN GLOBAL", f"{metrics['global_score']:.2f} / 5.0", metrics["global_status"]),
-        ("CUMPLIMIENTO", f"{metrics['cumplimiento']:.1f}%", "Promedio >= 4.0 = 100%"),
+        ("CUMPLIMIENTO", f"{metrics['cumplimiento']:.1f}%", "Promedio >= 4.5 = 100%"),
         ("ÍNDICE DE EXCELENCIA", f"{metrics['excelencia']:.1f}%", "Usuarios Promotores"),
     ]
     x = 42
@@ -920,7 +923,7 @@ def draw_kpi_cards(cmds, y, metrics):
         cmds.append(text(x + 16, y - 52, value, value_size, "#222222", True))
         cmds.append(text(x + 7, y - 66, note, 5.8, "#2f7d32", True))
         x += w + gap
-    return y - 88
+    return y - 100
 
 def draw_table(cmds, x, y, headers, rows, col_widths, row_h=18, max_rows=None):
     max_rows = max_rows or len(rows)
@@ -942,7 +945,7 @@ def draw_table(cmds, x, y, headers, rows, col_widths, row_h=18, max_rows=None):
             cmds.append(text(cx + 4, yy + 5, shown, 7.4, "#303030", False))
             cx += cw
     cmds.extend(line(x, yy, x + total_w, yy, "#dddddd", 0.4))
-    return yy - 18
+    return yy - 28
 
 
 def draw_comments_and_analysis(cmds, y, metrics):
@@ -993,6 +996,16 @@ def draw_trend_chart(cmds, x, y, w, h, labels, values):
             cmds.append(f"{px:.1f} {py:.1f} 3.2 0 360 arc f")
             label_y = min(py + 12, y + h + 8)
             cmds.append(text(px - 8, label_y, f"{values[idx]:.2f}", 7, "#303030"))
+            # Etiqueta de semana en eje X
+            raw_label = str(labels[idx]) if idx < len(labels) else ""
+            week_txt = raw_label
+            if "Sem." in raw_label:
+                try:
+                    week_txt = "S" + raw_label.split("Sem.")[1].split("(")[0].strip()
+                except Exception:
+                    week_txt = raw_label[:6]
+            cmds.append(text(px - 8, y - 16, week_txt, 6.5, "#666666"))
+    cmds.append(text(x + w/2 - 15, y - 28, "Semana", 7, "#666666"))
 
 
 def draw_radar_chart(cmds, cx, cy, radius, labels, values):
@@ -1029,9 +1042,11 @@ def add_report_pages(pdf, metrics, report_title, subtitle=None):
         cmds.append(text(42, 708, subtitle, 8.5, "#666666"))
     y = draw_section(cmds, 680, "1. Resumen Ejecutivo (Macrométricas)")
     y = draw_kpi_cards(cmds, y, metrics)
+    y -= 8
     y = draw_section(cmds, y, "2. Distribución del Cumplimiento Operativo")
     risk_rows = [[r["categoria"], r["criterio"], r["volumen"], r["representacion"]] for r in metrics["risk"]]
     y = draw_table(cmds, 42, y, ["CATEGORÍA", "CRITERIO", "VOLUMEN", "REP."], risk_rows, [235, 125, 60, 90], row_h=22)
+    y -= 8
     y = draw_section(cmds, y, "3. La Voz del Usuario y Observaciones")
     draw_comments_and_analysis(cmds, y, metrics)
     pdf_footer(cmds)
@@ -1044,7 +1059,7 @@ def add_report_pages(pdf, metrics, report_title, subtitle=None):
     cmds.append(text(42, 708, WEEK_RULE_NOTE, 8, "#666666"))
     y = draw_section(cmds, 680, "4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas)")
     draw_trend_chart(cmds, 70, y - 255, 455, 225, metrics["chart_labels"], metrics["chart_values"])
-    y = y - 290
+    y = y - 320
     y = draw_section(cmds, y, "5. Resumen Semanas Recientes")
     recent_rows = [[r["periodo"], r["n_encuestas"], f"{r['promedio']:.2f}", f"{r.get('cumplimiento', 0):.1f}%", r["estado"]] for r in metrics["recent_weeks"]]
     draw_table(cmds, 42, y, ["SEMANA", "N° ENC.", "PROM.", "CUMP.", "ESTADO / ACCIÓN"], recent_rows, [185, 62, 55, 58, 150], row_h=22)
@@ -1057,7 +1072,7 @@ def add_report_pages(pdf, metrics, report_title, subtitle=None):
     cmds.append(text(42, 724, report_title, 11, RED, True))
     y = draw_section(cmds, 690, f"6. Desempeño Específico por Dimensiones ({metrics['latest_label']})")
     cmds.append(text(42, y + 10, "Una calificación por debajo de 4.70 se considera foco de atención preventivo.", 8.5, "#555555"))
-    cmds.append(text(42, y - 4, "Regla de cumplimiento: promedio >= 4.0 equivale a 100%.", 8.5, "#555555"))
+    cmds.append(text(42, y - 4, "Regla de cumplimiento: promedio >= 4.5 equivale a 100%.", 8.5, "#555555"))
     draw_radar_chart(cmds, 175, y - 155, 78, metrics["radar_labels"], metrics["radar_values"])
     dy = y - 60
     for item in metrics["dimensions"]:

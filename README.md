@@ -19,10 +19,10 @@ Aplicación web Flask lista para Render.com, sin pandas/numpy/matplotlib/reportl
 
 El cumplimiento se calcula así:
 
-- Si el promedio de notas es **mayor o igual a 4.0**, el cumplimiento es **100%**.
-- Si el promedio es menor a 4.0, se calcula proporcionalmente contra el umbral 4.0.
+- Si el promedio de notas es **mayor o igual a 4.5**, el cumplimiento es **100%**.
+- Si el promedio es menor a 4.5, se calcula proporcionalmente contra el umbral 4.5.
 
-Ejemplo: promedio 3.6 = 90% de cumplimiento.
+Ejemplo: promedio 3.6 = 80% de cumplimiento.
 
 ## Despliegue en Render
 
@@ -53,7 +53,7 @@ La app usa SQLite. En Render se configura un disco persistente en `/var/data` me
 
 La antigua tabla de promotores/neutros/detractores fue reemplazada por una medición directa de cumplimiento:
 
-- **Cumple estándar operativo:** promedio >= 4.0.
-- **No cumple estándar operativo:** promedio < 4.0.
+- **Cumple estándar operativo:** promedio >= 4.5.
+- **No cumple estándar operativo:** promedio < 4.5.
 
 La estructura semanal se mantiene como lunes a domingo, con numeración ISO, igual que en la hoja KPI Semanal.

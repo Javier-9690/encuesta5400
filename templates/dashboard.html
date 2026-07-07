@@ -22,7 +22,7 @@
     <article class="kpi-card">
       <span>CUMPLIMIENTO</span>
       <strong>{{ '%.1f'|format(m.cumplimiento) }}%</strong>
-      <small>Promedio ≥ 4.0 = 100%</small>
+      <small>Promedio ≥ 4.5 = 100%</small>
     </article>
     <article class="kpi-card">
       <span>ÍNDICE DE EXCELENCIA</span>
@@ -107,7 +107,7 @@
   </div>
 
   <section class="section-title">6. Desempeño Específico por Dimensiones ({{ m.latest_label }})</section>
-  <p class="note">Una calificación por debajo de 4.70 se considera foco de atención preventivo. El cumplimiento se calcula con regla operativa: promedio ≥ 4.0 equivale a 100%; bajo 4.0 se calcula proporcionalmente.</p>
+  <p class="note">Una calificación por debajo de 4.70 se considera foco de atención preventivo. El cumplimiento se calcula con regla operativa: promedio ≥ 4.5 equivale a 100%; bajo 4.5 se calcula proporcionalmente.</p>
   <section class="two-col radar-layout">
     <div class="chart-card">
       <canvas id="radarChart_{{ prefix }}" height="260"></canvas>
