@@ -51,6 +51,8 @@ DIMENSION_LABELS = {
 RADAR_LABELS = ["Q1 Recepción", "Q2 Calidad", "Q3 Tiempos", "Q4 Higiene", "Q5 Trato"]
 RED = "#ed1b2e"
 RED_DARK = "#b60f1f"
+WEEK_RULE_NOTE = "Estructura semanal: lunes a domingo, manteniendo numeración ISO previamente definida."
+
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "cambiar-esta-clave-en-render")
@@ -294,6 +296,70 @@ def pct(part, total):
     return f"{pct_number(part, total):.1f}%"
 
 
+def cumplimiento_from_score(score):
+    """Cumplimiento: promedio >= 4.0 equivale a 100%. Bajo 4.0, se calcula proporcionalmente contra el umbral 4.0."""
+    if score is None:
+        return 0.0
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return 0.0
+    if value >= 4.0:
+        return 100.0
+    return round(max(0.0, min(100.0, (value / 4.0) * 100.0)), 1)
+
+
+def cumple_umbral(score):
+    """Verdadero cuando la evaluación cumple el umbral operativo de nota 4.0."""
+    try:
+        return float(score) >= 4.0
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_filter_date(value):
+    value = (value or "").strip()
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def filter_data_by_dates(data, fecha_inicio=None, fecha_fin=None):
+    start = parse_filter_date(fecha_inicio)
+    end = parse_filter_date(fecha_fin)
+    if start is None and end is None:
+        return []
+    out = []
+    for item in data:
+        dt = item.get("fecha_dt")
+        if dt is None:
+            continue
+        d = dt.date()
+        if start is not None and d < start:
+            continue
+        if end is not None and d > end:
+            continue
+        out.append(item)
+    return out
+
+
+def build_filter_label(fecha_inicio=None, fecha_fin=None):
+    start = parse_filter_date(fecha_inicio)
+    end = parse_filter_date(fecha_fin)
+    if start and end:
+        return f"{start:%d-%m-%Y} al {end:%d-%m-%Y}"
+    if start:
+        return f"Desde {start:%d-%m-%Y}"
+    if end:
+        return f"Hasta {end:%d-%m-%Y}"
+    return "Sin rango seleccionado"
+
+
 def start_of_week(dt):
     return (dt - timedelta(days=dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -325,6 +391,7 @@ def build_weekly(data):
             "n_encuestas": len(rows),
             "promedio_general": average([r.get("promedio") for r in rows]),
         }
+        record["cumplimiento"] = cumplimiento_from_score(record["promedio_general"])
         for col in DIMENSION_LABELS:
             record[col] = average([r.get(col) for r in rows])
         record["estado"] = status_from_score(record["promedio_general"])
@@ -339,6 +406,7 @@ def build_metrics(data):
             "total": 0,
             "global_score": 0,
             "excelencia": 0,
+            "cumplimiento": 0,
             "risk": [],
             "comments": [],
             "weekly": [],
@@ -352,18 +420,19 @@ def build_metrics(data):
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "global_status": "Sin datos",
             "latest_label": "Sin datos",
+            "week_rule_note": WEEK_RULE_NOTE,
         }
 
     total = len(data)
     global_score = average([item.get("promedio") for item in data]) or 0
+    cumplimiento = cumplimiento_from_score(global_score)
     promoters = sum(1 for item in data if item.get("promedio", 0) >= 4.8)
-    neutrals = sum(1 for item in data if 4.0 <= item.get("promedio", 0) < 4.8)
-    detractors = sum(1 for item in data if item.get("promedio", 0) < 4.0)
+    cumplen = sum(1 for item in data if cumple_umbral(item.get("promedio")))
+    no_cumplen = total - cumplen
 
     risk = [
-        {"categoria": "Promotores (Alta Satisfacción)", "criterio": "4.8 - 5.0", "volumen": promoters, "representacion": pct(promoters, total), "kind": "ok"},
-        {"categoria": "Neutros (Satisfacción Estándar)", "criterio": "4.0 - 4.7", "volumen": neutrals, "representacion": pct(neutrals, total), "kind": "neutral"},
-        {"categoria": "Detractores (Riesgo Operativo)", "criterio": "1.0 - 3.9", "volumen": detractors, "representacion": pct(detractors, total), "kind": "danger"},
+        {"categoria": "Cumple estándar operativo", "criterio": "Promedio >= 4.0", "volumen": cumplen, "representacion": pct(cumplen, total), "kind": "ok"},
+        {"categoria": "No cumple estándar operativo", "criterio": "Promedio < 4.0", "volumen": no_cumplen, "representacion": pct(no_cumplen, total), "kind": "danger"},
     ]
 
     comments = [item.get("comentarios", "") for item in sorted(data, key=lambda r: r["fecha_dt"], reverse=True) if item.get("comentarios", "").strip()][:6]
@@ -394,10 +463,11 @@ def build_metrics(data):
             analysis.append(f"Foco preventivo: {worst['label']} registra {worst['score']:.2f}, bajo el umbral 4.70.")
         else:
             analysis.append(f"Sin foco crítico: la dimensión más baja es {worst['label']} con {worst['score']:.2f}.")
-    if detractors > 0:
-        analysis.append(f"Riesgo operativo: {detractors} evaluaciones están bajo 4.0 y requieren revisión cualitativa.")
+    if no_cumplen > 0:
+        analysis.append(f"Cumplimiento operativo: {no_cumplen} evaluaciones están bajo 4.0 y requieren revisión cualitativa.")
     if comments:
         analysis.append("La revisión de comentarios recientes permite identificar causas operativas específicas detrás de los puntajes.")
+    analysis.append(f"Cumplimiento: {cumplimiento:.1f}% según regla operativa promedio >= 4.0 equivale a 100%.")
 
     return {
         "has_data": True,
@@ -405,10 +475,11 @@ def build_metrics(data):
         "global_score": global_score,
         "global_status": status_from_score(global_score),
         "excelencia": pct_number(promoters, total),
+        "cumplimiento": cumplimiento,
         "risk": risk,
         "comments": comments,
         "weekly": weekly,
-        "recent_weeks": [{"periodo": r["periodo"], "n_encuestas": r["n_encuestas"], "promedio": r["promedio_general"], "estado": r["estado"]} for r in recent],
+        "recent_weeks": [{"periodo": r["periodo"], "n_encuestas": r["n_encuestas"], "promedio": r["promedio_general"], "cumplimiento": r.get("cumplimiento", 0), "estado": r["estado"]} for r in recent],
         "dimensions": dimensions,
         "latest_label": latest_label,
         "analysis": analysis,
@@ -417,6 +488,7 @@ def build_metrics(data):
         "radar_labels": RADAR_LABELS,
         "radar_values": [d["score"] or 0 for d in dimensions],
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "week_rule_note": WEEK_RULE_NOTE,
     }
 
 
@@ -431,10 +503,40 @@ def export_csv_buffer(data):
     return output.getvalue().encode("utf-8-sig")
 
 
-def build_excel_buffer(data, metrics):
+def add_summary_sheets(wb, metrics, suffix=""):
+    ws2 = wb.create_sheet(f"Resumen Semanal{suffix}"[:31])
+    ws2.append(["Desde", "Hasta", "Año", "Semana", "Periodo", "N° Encuestas", "Prom. P1", "Prom. P2", "Prom. P3", "Prom. P4", "Prom. P5", "Promedio General", "Cumplimiento", "Estado / Acción"])
+    for row in metrics["weekly"]:
+        ws2.append([
+            row["week_start"].strftime("%Y-%m-%d"), row["week_end"].strftime("%Y-%m-%d"), row["iso_year"], row["iso_week"], row["periodo"], row["n_encuestas"],
+            row.get("q1_puntaje"), row.get("q2_puntaje"), row.get("q3_puntaje"), row.get("q4_puntaje"), row.get("q5_puntaje"), row.get("promedio_general"), row.get("cumplimiento"), row.get("estado"),
+        ])
+
+    ws3 = wb.create_sheet(f"Cumplimiento{suffix}"[:31])
+    ws3.append(["Categoría", "Criterio de cumplimiento", "Volumen", "Representación"])
+    for item in metrics["risk"]:
+        ws3.append([item["categoria"], item["criterio"], item["volumen"], item["representacion"]])
+
+    ws4 = wb.create_sheet(f"Dimensiones{suffix}"[:31])
+    ws4.append(["Dimensión", "Promedio", "Foco"])
+    for item in metrics["dimensions"]:
+        ws4.append([item["label"], item["score"], "Sí" if item["foco"] else "No"])
+
+    ws5 = wb.create_sheet(f"Macrométricas{suffix}"[:31])
+    ws5.append(["Indicador", "Valor"])
+    ws5.append(["Total evaluaciones", metrics.get("total", 0)])
+    ws5.append(["Satisfacción global", metrics.get("global_score", 0)])
+    ws5.append(["Cumplimiento", metrics.get("cumplimiento", 0)])
+    ws5.append(["Índice de excelencia", metrics.get("excelencia", 0)])
+    ws5.append(["Regla de cumplimiento", "Promedio >= 4.0 equivale a 100%"])
+    ws5.append(["Distribución de cumplimiento", "Cumple estándar operativo: promedio >= 4.0 / No cumple: promedio < 4.0"])
+    ws5.append(["Estructura semanal", WEEK_RULE_NOTE])
+
+
+def build_excel_buffer(data, metrics, filtered_data=None, filtered_metrics=None, filter_label=None):
     wb = Workbook()
     ws = wb.active
-    ws.title = "Datos Encuesta"
+    ws.title = "Datos Histórico"
     ws.append(["ID"] + EXPECTED_COLUMNS + ["IMPORTADO_EN"])
     for item in data:
         ws.append([
@@ -447,23 +549,24 @@ def build_excel_buffer(data, metrics):
             item.get("total"), item.get("promedio"), item.get("comentarios"), item.get("imported_at"),
         ])
 
-    ws2 = wb.create_sheet("Resumen Semanal")
-    ws2.append(["Desde", "Hasta", "Año", "Semana", "Periodo", "N° Encuestas", "Prom. P1", "Prom. P2", "Prom. P3", "Prom. P4", "Prom. P5", "Promedio General", "Estado / Acción"])
-    for row in metrics["weekly"]:
-        ws2.append([
-            row["week_start"].strftime("%Y-%m-%d"), row["week_end"].strftime("%Y-%m-%d"), row["iso_year"], row["iso_week"], row["periodo"], row["n_encuestas"],
-            row.get("q1_puntaje"), row.get("q2_puntaje"), row.get("q3_puntaje"), row.get("q4_puntaje"), row.get("q5_puntaje"), row.get("promedio_general"), row.get("estado"),
-        ])
+    add_summary_sheets(wb, metrics, " Hist")
 
-    ws3 = wb.create_sheet("Distribución Riesgo")
-    ws3.append(["Categoría", "Criterio", "Volumen", "Representación"])
-    for item in metrics["risk"]:
-        ws3.append([item["categoria"], item["criterio"], item["volumen"], item["representacion"]])
-
-    ws4 = wb.create_sheet("Dimensiones")
-    ws4.append(["Dimensión", "Promedio", "Foco"])
-    for item in metrics["dimensions"]:
-        ws4.append([item["label"], item["score"], "Sí" if item["foco"] else "No"])
+    if filtered_metrics is not None:
+        wsf = wb.create_sheet("Datos Filtro")
+        wsf.append(["Rango seleccionado", filter_label or ""])
+        wsf.append([])
+        wsf.append(["ID"] + EXPECTED_COLUMNS + ["IMPORTADO_EN"])
+        for item in filtered_data or []:
+            wsf.append([
+                item.get("id"), item.get("fecha"),
+                item.get("q1_respuesta"), item.get("q1_puntaje"),
+                item.get("q2_respuesta"), item.get("q2_puntaje"),
+                item.get("q3_respuesta"), item.get("q3_puntaje"),
+                item.get("q4_respuesta"), item.get("q4_puntaje"),
+                item.get("q5_respuesta"), item.get("q5_puntaje"),
+                item.get("total"), item.get("promedio"), item.get("comentarios"), item.get("imported_at"),
+            ])
+        add_summary_sheets(wb, filtered_metrics, " Filtro")
 
     for wsx in wb.worksheets:
         for column_cells in wsx.columns:
@@ -474,7 +577,6 @@ def build_excel_buffer(data, metrics):
     wb.save(buffer)
     buffer.seek(0)
     return buffer
-
 
 def build_template_buffer():
     wb = Workbook()
@@ -802,21 +904,23 @@ def draw_section(cmds, y, title):
 
 def draw_kpi_cards(cmds, y, metrics):
     cards = [
-        ("TOTAL DE EVALUACIONES", str(metrics["total"]), "Muestra Histórica"),
+        ("TOTAL DE EVALUACIONES", str(metrics["total"]), "Muestra analizada"),
         ("SATISFACCIÓN GLOBAL", f"{metrics['global_score']:.2f} / 5.0", metrics["global_status"]),
+        ("CUMPLIMIENTO", f"{metrics['cumplimiento']:.1f}%", "Promedio >= 4.0 = 100%"),
         ("ÍNDICE DE EXCELENCIA", f"{metrics['excelencia']:.1f}%", "Usuarios Promotores"),
     ]
     x = 42
-    w = 158
+    w = 120
+    gap = 10
     for label, value, note in cards:
         cmds.extend(rect(x, y - 72, w, 62, "#fff8f9"))
         cmds.extend(line(x, y - 10, x + w, y - 10, RED, 2))
-        cmds.append(text(x + 12, y - 29, label, 7.5, "#666666", True))
-        cmds.append(text(x + 46, y - 52, value, 18, "#222222", True))
-        cmds.append(text(x + 20, y - 66, note, 7, "#2f7d32", True))
-        x += 176
+        cmds.append(text(x + 7, y - 29, label, 6.6, "#666666", True))
+        value_size = 15 if len(value) > 8 else 17
+        cmds.append(text(x + 16, y - 52, value, value_size, "#222222", True))
+        cmds.append(text(x + 7, y - 66, note, 5.8, "#2f7d32", True))
+        x += w + gap
     return y - 88
-
 
 def draw_table(cmds, x, y, headers, rows, col_widths, row_h=18, max_rows=None):
     max_rows = max_rows or len(rows)
@@ -910,59 +1014,70 @@ def draw_radar_chart(cmds, cx, cy, radius, labels, values):
         cmds.append(text(lx - 25, ly, label[:14], 6.5, "#555555"))
 
 
-def generate_pdf_report(metrics):
-    pdf = SimplePDF()
-    pdf.add_image("LogoA", LOGO_ARAMARK_PATH)
-    pdf.add_image("LogoB", LOGO_BHP_PATH)
+def pdf_footer(cmds):
+    cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
+    cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
 
+
+def add_report_pages(pdf, metrics, report_title, subtitle=None):
     cmds = []
     pdf_header(cmds, pdf)
     cmds.append(text(42, 742, "REPORTE EJECUTIVO DE CALIDAD", 18, "#202020", True))
-    cmds.append(text(42, 724, "Evaluación de Satisfacción e Impacto del Factor Humano en la Operación", 10, "#666666"))
-    y = draw_section(cmds, 690, "1. Resumen Ejecutivo (Macrométricas)")
+    cmds.append(text(42, 724, report_title, 11, RED, True))
+    if subtitle:
+        cmds.append(text(42, 708, subtitle, 8.5, "#666666"))
+    y = draw_section(cmds, 680, "1. Resumen Ejecutivo (Macrométricas)")
     y = draw_kpi_cards(cmds, y, metrics)
-    y = draw_section(cmds, y, "2. Distribución del Riesgo Operativo")
+    y = draw_section(cmds, y, "2. Distribución del Cumplimiento Operativo")
     risk_rows = [[r["categoria"], r["criterio"], r["volumen"], r["representacion"]] for r in metrics["risk"]]
-    y = draw_table(cmds, 42, y, ["CATEGORÍA DE USUARIO", "CRITERIO", "VOLUMEN", "REP."], risk_rows, [235, 95, 80, 100], row_h=22)
+    y = draw_table(cmds, 42, y, ["CATEGORÍA", "CRITERIO", "VOLUMEN", "REP."], risk_rows, [235, 125, 60, 90], row_h=22)
     y = draw_section(cmds, y, "3. La Voz del Usuario y Observaciones")
     draw_comments_and_analysis(cmds, y, metrics)
-    cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
-    cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
+    pdf_footer(cmds)
     pdf.add_page(cmds)
 
     cmds = []
     pdf_header(cmds, pdf)
     cmds.append(text(42, 742, "ANÁLISIS DE TENDENCIAS Y DESGLOSE", 18, "#202020", True))
-    cmds.append(text(42, 724, "Monitoreo semanal de resultados operativos", 10, "#666666"))
-    y = draw_section(cmds, 690, "4. Evolución Histórica (Últimas 10 Semanas)")
+    cmds.append(text(42, 724, report_title, 11, RED, True))
+    cmds.append(text(42, 708, WEEK_RULE_NOTE, 8, "#666666"))
+    y = draw_section(cmds, 680, "4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas)")
     draw_trend_chart(cmds, 70, y - 230, 455, 190, metrics["chart_labels"], metrics["chart_values"])
     y = y - 260
     y = draw_section(cmds, y, "5. Resumen Semanas Recientes")
-    recent_rows = [[r["periodo"], r["n_encuestas"], f"{r['promedio']:.2f}", r["estado"]] for r in metrics["recent_weeks"]]
-    y = draw_table(cmds, 42, y, ["SEMANA", "N° ENC.", "PROM.", "ESTADO / ACCIÓN"], recent_rows, [210, 75, 75, 150], row_h=22)
-    cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
-    cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
+    recent_rows = [[r["periodo"], r["n_encuestas"], f"{r['promedio']:.2f}", f"{r.get('cumplimiento', 0):.1f}%", r["estado"]] for r in metrics["recent_weeks"]]
+    draw_table(cmds, 42, y, ["SEMANA", "N° ENC.", "PROM.", "CUMP.", "ESTADO / ACCIÓN"], recent_rows, [185, 62, 55, 58, 150], row_h=22)
+    pdf_footer(cmds)
     pdf.add_page(cmds)
 
-    # Página exclusiva para la sección 6, así se evita que el gráfico radar se mezcle con el pie de página.
     cmds = []
     pdf_header(cmds, pdf)
     cmds.append(text(42, 742, "ANÁLISIS DE TENDENCIAS Y DESGLOSE", 18, "#202020", True))
-    cmds.append(text(42, 724, "Monitoreo semanal de resultados operativos", 10, "#666666"))
+    cmds.append(text(42, 724, report_title, 11, RED, True))
     y = draw_section(cmds, 690, f"6. Desempeño Específico por Dimensiones ({metrics['latest_label']})")
     cmds.append(text(42, y + 10, "Una calificación por debajo de 4.70 se considera foco de atención preventivo.", 8.5, "#555555"))
-    draw_radar_chart(cmds, 175, y - 150, 80, metrics["radar_labels"], metrics["radar_values"])
+    cmds.append(text(42, y - 4, "Regla de cumplimiento: promedio >= 4.0 equivale a 100%.", 8.5, "#555555"))
+    draw_radar_chart(cmds, 175, y - 155, 78, metrics["radar_labels"], metrics["radar_values"])
     dy = y - 60
     for item in metrics["dimensions"]:
         color = RED if item["foco"] else "#2f7d32"
         score = "-" if item["score"] is None else f"{item['score']:.2f}" + (" (Foco)" if item["foco"] else "")
         cmds.extend(rect(330, dy - 1, 4, 4, RED))
-        cmds.append(text(340, dy, item["label"], 8.5, "#303030", True))
-        cmds.append(text(505, dy, score, 8.5, color, True))
+        cmds.append(text(340, dy, item["label"], 8.2, "#303030", True))
+        cmds.append(text(505, dy, score, 8.2, color, True))
         dy -= 20
-    cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
-    cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
+    pdf_footer(cmds)
     pdf.add_page(cmds)
+
+
+def generate_pdf_report(metrics, filtered_metrics=None, filter_label=None):
+    pdf = SimplePDF()
+    pdf.add_image("LogoA", LOGO_ARAMARK_PATH)
+    pdf.add_image("LogoB", LOGO_BHP_PATH)
+    add_report_pages(pdf, metrics, "REPORTE HISTÓRICO", "Evaluación de Satisfacción e Impacto del Factor Humano en la Operación")
+    if filtered_metrics is not None:
+        title = f"REPORTE POR FECHA SELECCIONADA: {filter_label}" if filter_label else "REPORTE POR FECHA SELECCIONADA"
+        add_report_pages(pdf, filtered_metrics, title, "Comparativo del rango seleccionado conservando estructura semanal lunes-domingo")
     return pdf.finish()
 
 
@@ -983,7 +1098,22 @@ def inject_helpers():
 def dashboard():
     data = load_data()
     metrics = build_metrics(data)
-    return render_template("dashboard.html", title=APP_TITLE, metrics=metrics)
+    filter_start = (request.args.get("fecha_inicio") or "").strip()
+    filter_end = (request.args.get("fecha_fin") or "").strip()
+    filter_active = bool(filter_start or filter_end)
+    filtered_data = filter_data_by_dates(data, filter_start, filter_end) if filter_active else []
+    filtered_metrics = build_metrics(filtered_data) if filter_active else build_metrics([])
+    filter_label = build_filter_label(filter_start, filter_end)
+    return render_template(
+        "dashboard.html",
+        title=APP_TITLE,
+        metrics=metrics,
+        filtered_metrics=filtered_metrics,
+        filter_start=filter_start,
+        filter_end=filter_end,
+        filter_active=filter_active,
+        filter_label=filter_label,
+    )
 
 
 @app.route("/importar", methods=["POST"])
@@ -1019,7 +1149,12 @@ def exportar_csv():
 def exportar_excel():
     data = load_data()
     metrics = build_metrics(data)
-    buffer = build_excel_buffer(data, metrics)
+    filter_start = (request.args.get("fecha_inicio") or "").strip()
+    filter_end = (request.args.get("fecha_fin") or "").strip()
+    filter_active = bool(filter_start or filter_end)
+    filtered_data = filter_data_by_dates(data, filter_start, filter_end) if filter_active else []
+    filtered_metrics = build_metrics(filtered_data) if filter_active else None
+    buffer = build_excel_buffer(data, metrics, filtered_data if filter_active else None, filtered_metrics, build_filter_label(filter_start, filter_end) if filter_active else None)
     return send_file(buffer, as_attachment=True, download_name="reporte_encuesta_satisfaccion_5400.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -1030,7 +1165,12 @@ def exportar_pdf():
     if not metrics["has_data"]:
         flash("No hay datos para exportar.", "error")
         return redirect(url_for("dashboard"))
-    buffer = generate_pdf_report(metrics)
+    filter_start = (request.args.get("fecha_inicio") or "").strip()
+    filter_end = (request.args.get("fecha_fin") or "").strip()
+    filter_active = bool(filter_start or filter_end)
+    filtered_data = filter_data_by_dates(data, filter_start, filter_end) if filter_active else []
+    filtered_metrics = build_metrics(filtered_data) if filter_active else None
+    buffer = generate_pdf_report(metrics, filtered_metrics, build_filter_label(filter_start, filter_end) if filter_active else None)
     return send_file(buffer, as_attachment=True, download_name="reporte_encuesta_satisfaccion_5400.pdf", mimetype="application/pdf")
 
 

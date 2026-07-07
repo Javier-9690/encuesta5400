@@ -1,60 +1,59 @@
 # Dashboard Encuesta de Satisfacción - Campamento 5400
 
-Aplicación Flask lista para Render.com. Permite importar la pestaña **Encuesta de Satisfacción** desde un archivo Excel `.xlsx`, visualizar un dashboard ejecutivo y exportar los datos en PDF, Excel y CSV.
+Aplicación web Flask lista para Render.com, sin pandas/numpy/matplotlib/reportlab para evitar problemas de compilación en Render.
 
-## Corrección importante de despliegue
+## Funciones principales
 
-Esta versión elimina `pandas`, `numpy`, `matplotlib` y `reportlab` para evitar el error de compilación en Render cuando usa Python 3.14. La lectura y exportación Excel se hacen con `openpyxl`; el PDF se genera internamente sin dependencias compiladas.
+- Importa archivos `.xlsx` desde la pestaña **Encuesta de Satisfacción**.
+- Mantiene estructura semanal previamente definida: **lunes a domingo con numeración ISO**.
+- Calcula reporte histórico completo.
+- Permite seleccionar **fecha de inicio** y **fecha final** para mostrar un reporte por rango.
+- Muestra en el dashboard el histórico y, cuando se filtra, también el reporte por fecha seleccionada.
+- Exporta PDF con reporte histórico y reporte por fecha seleccionada si existe filtro activo.
+- Exporta Excel con hojas históricas y hojas filtradas si existe filtro activo.
+- Exporta CSV histórico.
+- Incluye logos Aramark y Escondida | BHP.
+- Estilo corporativo rojo.
 
-## Archivos principales
+## Regla de cumplimiento
 
-- `app.py`: aplicación Flask.
-- `requirements.txt`: dependencias livianas compatibles con Render.
-- `render.yaml`: configuración para Render.
-- `.python-version` y `runtime.txt`: fuerzan Python 3.12.7.
-- `static/img/logo_aramark.png`: logo Aramark.
-- `static/img/logo_campamento_5400.png`: logo Escondida | BHP.
+El cumplimiento se calcula así:
 
-## Uso local
+- Si el promedio de notas es **mayor o igual a 4.0**, el cumplimiento es **100%**.
+- Si el promedio es menor a 4.0, se calcula proporcionalmente contra el umbral 4.0.
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python app.py
-```
-
-Abrir: http://127.0.0.1:5000
+Ejemplo: promedio 3.6 = 90% de cumplimiento.
 
 ## Despliegue en Render
 
-1. Sube todos los archivos del proyecto a la raíz del repositorio GitHub.
-2. En Render crea un **New Web Service** desde el repositorio.
-3. Verifica:
-   - Build Command: `pip install -r requirements.txt`
-   - Start Command: `gunicorn app:app`
-4. En Render ejecuta **Manual Deploy → Clear build cache & deploy**.
+1. Subir todos los archivos de esta carpeta a la raíz de un repositorio GitHub.
+2. Crear un Web Service en Render.
+3. Build Command:
 
-## Estructura esperada del Excel
+```bash
+pip install -r requirements.txt
+```
 
-La app busca automáticamente una hoja que contenga “Encuesta” y “Satisf” en el nombre. Las columnas requeridas son:
+4. Start Command:
 
-- FECHA
-- Q1_RESPUESTA, Q1_PUNTAJE
-- Q2_RESPUESTA, Q2_PUNTAJE
-- Q3_RESPUESTA, Q3_PUNTAJE
-- Q4_RESPUESTA, Q4_PUNTAJE
-- Q5_RESPUESTA, Q5_PUNTAJE
-- TOTAL
-- PROMEDIO
-- COMENTARIOS
+```bash
+gunicorn app:app
+```
 
-También puedes descargar una plantilla desde la pantalla principal.
-## Corrección UTF-8
+5. Si ya existe un despliegue anterior, usar:
 
-Esta versión fuerza `charset=utf-8` en las respuestas HTML/CSV/JSON para que palabras con tildes y ñ se vean correctamente en Render. También mantiene el PDF con codificación WinAnsi para preservar acentos en el exportable.
+**Manual Deploy → Clear build cache & deploy**
+
+## Persistencia
+
+La app usa SQLite. En Render se configura un disco persistente en `/var/data` mediante `render.yaml`.
 
 
-## Corrección PDF acentos y ñ
+## Distribución de cumplimiento operativo
 
-El exportador PDF fue ajustado para escribir los caracteres con tildes y ñ mediante escapes octales WinAnsi/CP1252 y un mapa ToUnicode. Esto evita que el visor PDF de Render/navegador muestre textos como `Evaluaci�n` al exportar el reporte.
+La antigua tabla de promotores/neutros/detractores fue reemplazada por una medición directa de cumplimiento:
+
+- **Cumple estándar operativo:** promedio >= 4.0.
+- **No cumple estándar operativo:** promedio < 4.0.
+
+La estructura semanal se mantiene como lunes a domingo, con numeración ISO, igual que en la hoja KPI Semanal.

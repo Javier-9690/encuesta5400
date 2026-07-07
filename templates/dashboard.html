@@ -1,4 +1,187 @@
 {% extends "base.html" %}
+{% macro report_block(m, titulo, prefix) %}
+<section class="report-block">
+  <div class="report-heading">
+    <h2>{{ titulo }}</h2>
+    <p>{{ m.week_rule_note }}</p>
+  </div>
+
+  {% if m.has_data %}
+  <section class="section-title">1. Resumen Ejecutivo (Macrométricas)</section>
+  <section class="kpi-grid four">
+    <article class="kpi-card">
+      <span>TOTAL DE EVALUACIONES</span>
+      <strong>{{ m.total }}</strong>
+      <small>Muestra analizada</small>
+    </article>
+    <article class="kpi-card">
+      <span>SATISFACCIÓN GLOBAL</span>
+      <strong>{{ '%.2f'|format(m.global_score) }} <em>/ 5.0</em></strong>
+      <small class="{{ status_class(m.global_status) }}">{{ m.global_status }}</small>
+    </article>
+    <article class="kpi-card">
+      <span>CUMPLIMIENTO</span>
+      <strong>{{ '%.1f'|format(m.cumplimiento) }}%</strong>
+      <small>Promedio ≥ 4.0 = 100%</small>
+    </article>
+    <article class="kpi-card">
+      <span>ÍNDICE DE EXCELENCIA</span>
+      <strong>{{ '%.1f'|format(m.excelencia) }}%</strong>
+      <small>Usuarios Promotores</small>
+    </article>
+  </section>
+
+  <section class="section-title">2. Distribución del Cumplimiento Operativo</section>
+  <div class="table-card">
+    <table>
+      <thead>
+        <tr>
+          <th>Categoría</th>
+          <th>Criterio de cumplimiento</th>
+          <th>Volumen</th>
+          <th>Representación</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in m.risk %}
+        <tr>
+          <td><strong>{{ item.categoria }}</strong></td>
+          <td>{{ item.criterio }}</td>
+          <td>{{ item.volumen }}</td>
+          <td class="{{ item.kind }}"><strong>{{ item.representacion }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <section class="section-title">3. La Voz del Usuario y Observaciones</section>
+  <section class="two-col">
+    <div class="panel">
+      <h2>Comentarios Recientes Destacados</h2>
+      {% for comment in m.comments[:4] %}
+        <blockquote>“{{ comment }}”</blockquote>
+      {% else %}
+        <p class="muted">Sin comentarios registrados.</p>
+      {% endfor %}
+    </div>
+    <div class="panel">
+      <h2>Análisis Cualitativo</h2>
+      <ul class="analysis-list">
+        {% for item in m.analysis %}
+          <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+
+  <section class="section-title">4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas)</section>
+  <div class="chart-card">
+    <canvas id="trendChart_{{ prefix }}" height="130"></canvas>
+  </div>
+
+  <section class="section-title">5. Resumen Semanas Recientes</section>
+  <div class="table-card">
+    <table>
+      <thead>
+        <tr>
+          <th>Semana</th>
+          <th>N° Encuestas</th>
+          <th>Nota Promedio</th>
+          <th>Cumplimiento</th>
+          <th>Estado / Acción</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in m.recent_weeks %}
+        <tr>
+          <td>{{ row.periodo }}</td>
+          <td>{{ row.n_encuestas }}</td>
+          <td><strong>{{ '%.2f'|format(row.promedio) }}</strong></td>
+          <td><strong>{{ '%.1f'|format(row.cumplimiento) }}%</strong></td>
+          <td class="{{ status_class(row.estado) }}"><strong>{{ row.estado }}</strong></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <section class="section-title">6. Desempeño Específico por Dimensiones ({{ m.latest_label }})</section>
+  <p class="note">Una calificación por debajo de 4.70 se considera foco de atención preventivo. El cumplimiento se calcula con regla operativa: promedio ≥ 4.0 equivale a 100%; bajo 4.0 se calcula proporcionalmente.</p>
+  <section class="two-col radar-layout">
+    <div class="chart-card">
+      <canvas id="radarChart_{{ prefix }}" height="260"></canvas>
+    </div>
+    <div class="panel dimensions">
+      {% for item in m.dimensions %}
+        <div class="dimension-row">
+          <span>{{ item.label }}</span>
+          <strong class="{{ 'danger' if item.foco else 'ok' }}">
+            {{ '-' if item.score is none else '%.2f'|format(item.score) }}{% if item.foco %} (Foco){% endif %}
+          </strong>
+        </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <script>
+  (function () {
+    const trendLabels = {{ json_dumps(m.chart_labels) | safe }};
+    const trendValues = {{ json_dumps(m.chart_values) | safe }};
+    const radarLabels = {{ json_dumps(m.radar_labels) | safe }};
+    const radarValues = {{ json_dumps(m.radar_values) | safe }};
+
+    new Chart(document.getElementById('trendChart_{{ prefix }}'), {
+      type: 'line',
+      data: {
+        labels: trendLabels,
+        datasets: [{
+          label: 'Promedio semanal',
+          data: trendValues,
+          borderColor: '#ed1b2e',
+          backgroundColor: 'rgba(237, 27, 46, 0.12)',
+          tension: 0.25,
+          fill: false,
+          pointRadius: 5,
+          pointHoverRadius: 7
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: { y: { min: 1, max: 5, ticks: { stepSize: 0.5 } } }
+      }
+    });
+
+    new Chart(document.getElementById('radarChart_{{ prefix }}'), {
+      type: 'radar',
+      data: {
+        labels: radarLabels,
+        datasets: [{
+          label: 'Promedio última semana',
+          data: radarValues,
+          borderColor: '#ed1b2e',
+          backgroundColor: 'rgba(237, 27, 46, 0.20)',
+          pointBackgroundColor: '#ed1b2e'
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: { r: { min: 0, max: 5, ticks: { stepSize: 1 } } }
+      }
+    });
+  })();
+  </script>
+  {% else %}
+  <section class="empty-state compact">
+    <h2>Sin datos en este rango</h2>
+    <p>No hay encuestas para el período seleccionado.</p>
+  </section>
+  {% endif %}
+</section>
+{% endmacro %}
+
 {% block content %}
 <section class="hero">
   <div>
@@ -20,173 +203,37 @@
 </section>
 
 {% if metrics.has_data %}
-<section class="section-title">1. Resumen Ejecutivo (Macrométricas)</section>
-<section class="kpi-grid">
-  <article class="kpi-card">
-    <span>TOTAL DE EVALUACIONES</span>
-    <strong>{{ metrics.total }}</strong>
-    <small>Muestra Histórica</small>
-  </article>
-  <article class="kpi-card">
-    <span>SATISFACCIÓN GLOBAL</span>
-    <strong>{{ '%.2f'|format(metrics.global_score) }} <em>/ 5.0</em></strong>
-    <small class="{{ status_class(metrics.global_status) }}">{{ metrics.global_status }}</small>
-  </article>
-  <article class="kpi-card">
-    <span>ÍNDICE DE EXCELENCIA</span>
-    <strong>{{ '%.1f'|format(metrics.excelencia) }}%</strong>
-    <small>Usuarios Promotores</small>
-  </article>
+<section class="filter-card">
+  <form method="get" action="{{ url_for('dashboard') }}">
+    <div>
+      <label>Fecha inicio</label>
+      <input type="date" name="fecha_inicio" value="{{ filter_start }}">
+    </div>
+    <div>
+      <label>Fecha final</label>
+      <input type="date" name="fecha_fin" value="{{ filter_end }}">
+    </div>
+    <button type="submit">Ver reporte por fecha</button>
+    <a class="btn secondary" href="{{ url_for('dashboard') }}">Limpiar filtro</a>
+  </form>
+  <p>El reporte histórico siempre se mantiene. El reporte por fecha usa el rango seleccionado y conserva la misma estructura semanal previamente definida: lunes a domingo y numeración ISO.</p>
 </section>
 
 <section class="actions">
-  <a class="btn" href="{{ url_for('exportar_pdf') }}">Exportar PDF</a>
-  <a class="btn secondary" href="{{ url_for('exportar_excel') }}">Exportar Excel</a>
-  <a class="btn secondary" href="{{ url_for('exportar_csv') }}">Exportar CSV</a>
+  <a class="btn" href="{{ url_for('exportar_pdf', fecha_inicio=filter_start, fecha_fin=filter_end) }}">Exportar PDF</a>
+  <a class="btn secondary" href="{{ url_for('exportar_excel', fecha_inicio=filter_start, fecha_fin=filter_end) }}">Exportar Excel</a>
+  <a class="btn secondary" href="{{ url_for('exportar_csv') }}">Exportar CSV histórico</a>
 </section>
 
-<section class="section-title">2. Distribución del Riesgo Operativo</section>
-<div class="table-card">
-  <table>
-    <thead>
-      <tr>
-        <th>Categoría de usuario</th>
-        <th>Criterio (nota)</th>
-        <th>Volumen</th>
-        <th>Representación</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in metrics.risk %}
-      <tr>
-        <td><strong>{{ item.categoria }}</strong></td>
-        <td>{{ item.criterio }}</td>
-        <td>{{ item.volumen }}</td>
-        <td class="{{ item.kind }}"><strong>{{ item.representacion }}</strong></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+{{ report_block(metrics, 'REPORTE HISTÓRICO', 'hist') }}
 
-<section class="section-title">3. La Voz del Usuario y Observaciones</section>
-<section class="two-col">
-  <div class="panel">
-    <h2>Comentarios Recientes Destacados</h2>
-    {% for comment in metrics.comments[:4] %}
-      <blockquote>“{{ comment }}”</blockquote>
-    {% else %}
-      <p class="muted">Sin comentarios registrados.</p>
-    {% endfor %}
-  </div>
-  <div class="panel">
-    <h2>Análisis Cualitativo</h2>
-    <ul class="analysis-list">
-      {% for item in metrics.analysis %}
-        <li>{{ item }}</li>
-      {% endfor %}
-    </ul>
-  </div>
-</section>
-
-<section class="section-title">4. Evolución Histórica (Últimas 10 Semanas)</section>
-<div class="chart-card">
-  <canvas id="trendChart" height="130"></canvas>
-</div>
-
-<section class="section-title">5. Resumen Semanas Recientes</section>
-<div class="table-card">
-  <table>
-    <thead>
-      <tr>
-        <th>Semana</th>
-        <th>N° Encuestas</th>
-        <th>Nota Promedio</th>
-        <th>Estado / Acción</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in metrics.recent_weeks %}
-      <tr>
-        <td>{{ row.periodo }}</td>
-        <td>{{ row.n_encuestas }}</td>
-        <td><strong>{{ '%.2f'|format(row.promedio) }}</strong></td>
-        <td class="{{ status_class(row.estado) }}"><strong>{{ row.estado }}</strong></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
-
-<section class="section-title">6. Desempeño Específico por Dimensiones ({{ metrics.latest_label }})</section>
-<p class="note">Una calificación por debajo de 4.70 se considera foco de atención preventivo.</p>
-<section class="two-col radar-layout">
-  <div class="chart-card">
-    <canvas id="radarChart" height="260"></canvas>
-  </div>
-  <div class="panel dimensions">
-    {% for item in metrics.dimensions %}
-      <div class="dimension-row">
-        <span>{{ item.label }}</span>
-        <strong class="{{ 'danger' if item.foco else 'ok' }}">
-          {{ '-' if item.score is none else '%.2f'|format(item.score) }}{% if item.foco %} (Foco){% endif %}
-        </strong>
-      </div>
-    {% endfor %}
-  </div>
-</section>
-
-<script>
-const trendLabels = {{ json_dumps(metrics.chart_labels) | safe }};
-const trendValues = {{ json_dumps(metrics.chart_values) | safe }};
-const radarLabels = {{ json_dumps(metrics.radar_labels) | safe }};
-const radarValues = {{ json_dumps(metrics.radar_values) | safe }};
-
-new Chart(document.getElementById('trendChart'), {
-  type: 'line',
-  data: {
-    labels: trendLabels,
-    datasets: [{
-      label: 'Promedio semanal',
-      data: trendValues,
-      borderColor: '#ed1b2e',
-      backgroundColor: 'rgba(237, 27, 46, 0.12)',
-      tension: 0.25,
-      fill: false,
-      pointRadius: 5,
-      pointHoverRadius: 7
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: { legend: { display: false } },
-    scales: { y: { min: 1, max: 5, ticks: { stepSize: 0.5 } } }
-  }
-});
-
-new Chart(document.getElementById('radarChart'), {
-  type: 'radar',
-  data: {
-    labels: radarLabels,
-    datasets: [{
-      label: 'Promedio última semana',
-      data: radarValues,
-      borderColor: '#ed1b2e',
-      backgroundColor: 'rgba(237, 27, 46, 0.20)',
-      pointBackgroundColor: '#ed1b2e'
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: { legend: { display: false } },
-    scales: { r: { min: 0, max: 5, ticks: { stepSize: 1 } } }
-  }
-});
-</script>
+{% if filter_active %}
+{{ report_block(filtered_metrics, 'REPORTE POR FECHA SELECCIONADA: ' ~ filter_label, 'filter') }}
+{% endif %}
 {% else %}
 <section class="empty-state">
   <h2>Sin datos importados</h2>
-  <p>Sube el Excel que contiene la pestaña <strong>Encuesta de Satisfacción</strong>. La aplicación calculará automáticamente el resumen ejecutivo, riesgo operativo, tendencia semanal, comentarios y dimensiones Q1 a Q5.</p>
+  <p>Sube el Excel que contiene la pestaña <strong>Encuesta de Satisfacción</strong>. La aplicación calculará automáticamente el resumen ejecutivo, cumplimiento operativo, tendencia semanal, comentarios y dimensiones Q1 a Q5.</p>
 </section>
 {% endif %}
 {% endblock %}
