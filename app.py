@@ -1047,6 +1047,46 @@ def pdf_footer(cmds):
     cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
 
 
+def add_scale_page(pdf, report_title):
+    cmds = []
+    pdf_header(cmds, pdf)
+    cmds.append(text(42, 742, "ESCALA DE CUMPLIMIENTO Y EXCELENCIA", 18, "#202020", True))
+    cmds.append(text(42, 724, report_title, 11, RED, True))
+    cmds.append(text(42, 704, "Esta escala explica la diferencia entre cumplimiento operativo e índice de excelencia.", 9, "#666666"))
+
+    y = 670
+    cmds.extend(rect(42, y - 210, 511, 210, "#fff8f9"))
+    cmds.extend(line(42, y, 553, y, RED, 2.0))
+    cmds.append(text(58, y - 30, "RANGO DE NOTA", 9, "#444444", True))
+    cmds.append(text(190, y - 30, "CATEGORÍA", 9, "#444444", True))
+    cmds.append(text(350, y - 30, "INTERPRETACIÓN", 9, "#444444", True))
+
+    rows = [
+        ("1.0 a 3.9", "Riesgo operativo", "Evaluación deficiente o crítica"),
+        ("4.0 a 4.49", "Bajo estándar", "Aún no cumple el estándar operativo"),
+        ("4.5 a 4.79", "Cumple estándar operativo", "Cumple, pero todavía no es excelencia"),
+        ("4.8 a 5.0", "Excelencia / Promotor", "Alta satisfacción / estándar superior"),
+    ]
+    yy = y - 60
+    for rango, categoria, interpretacion in rows:
+        cmds.extend(line(58, yy + 12, 535, yy + 12, "#dddddd", 0.5))
+        cmds.append(text(58, yy, rango, 9, "#303030", True))
+        cmds.append(text(190, yy, categoria, 9, "#303030", True))
+        cmds.append(text(350, yy, interpretacion, 8.5, "#303030"))
+        yy -= 36
+
+    y2 = 390
+    cmds.extend(rect(42, y2 - 105, 511, 105, "#ffffff"))
+    cmds.extend(line(42, y2, 553, y2, RED, 1.5))
+    cmds.append(text(58, y2 - 25, "Reglas operativas", 11, RED, True))
+    cmds.append(text(58, y2 - 48, "Cumplimiento operativo: promedio >= 4.5 equivale a 100%.", 9, "#303030"))
+    cmds.append(text(58, y2 - 68, "Índice de excelencia: porcentaje de evaluaciones con promedio >= 4.8.", 9, "#303030"))
+    cmds.append(text(58, y2 - 88, "Una encuesta puede cumplir el estándar operativo sin ser considerada excelencia.", 8.5, "#666666"))
+
+    pdf_footer(cmds)
+    pdf.add_page(cmds)
+
+
 def add_report_pages(pdf, metrics, report_title, subtitle=None):
     cmds = []
     pdf_header(cmds, pdf)
@@ -1066,6 +1106,8 @@ def add_report_pages(pdf, metrics, report_title, subtitle=None):
     draw_comments_and_analysis(cmds, y, metrics)
     pdf_footer(cmds)
     pdf.add_page(cmds)
+
+    add_scale_page(pdf, report_title)
 
     cmds = []
     pdf_header(cmds, pdf)
