@@ -890,7 +890,7 @@ def pdf_header(cmds, pdf):
     else:
         cmds.append(text(42, 804, "aramark", 16, RED, True))
     if "LogoB" in pdf.images:
-        cmds.append(image_cmd("LogoB", 315, 790, 235, 21))
+        cmds.append(image_cmd("LogoB", 345, 792, 185, 16.5))
     else:
         cmds.append(text(360, 804, "ESCONDIDA | BHP", 15, "#f58220", True))
     cmds.extend(line(42, 778, 553, 778, RED, 2.5))
@@ -971,11 +971,13 @@ def draw_comments_and_analysis(cmds, y, metrics):
 
 
 def draw_trend_chart(cmds, x, y, w, h, labels, values):
+    # Eje Y fijo de 1 a 5 con separaciones claras entre cada nivel.
     cmds.extend(line(x, y, x, y + h, "#999999", 0.8))
     cmds.extend(line(x, y, x + w, y, "#999999", 0.8))
-    for i in range(1, 5):
-        gy = y + h * i / 4
-        cmds.extend(line(x, gy, x + w, gy, "#e5e5e5", 0.3))
+    for level in range(1, 6):
+        gy = y + h * (level - 1) / 4
+        cmds.extend(line(x, gy, x + w, gy, "#e5e5e5", 0.45))
+        cmds.append(text(x - 23, gy - 2, f"{level}.0", 7, "#666666"))
     if values:
         pts = []
         for idx, val in enumerate(values):
@@ -989,9 +991,8 @@ def draw_trend_chart(cmds, x, y, w, h, labels, values):
         for idx, (px, py) in enumerate(pts):
             cmds.append(cmd_set_fill(RED))
             cmds.append(f"{px:.1f} {py:.1f} 3.2 0 360 arc f")
-            cmds.append(text(px - 8, py + 10, f"{values[idx]:.2f}", 7, "#303030"))
-    cmds.append(text(x - 25, y + h + 2, "5.0", 7, "#666666"))
-    cmds.append(text(x - 25, y - 2, "1.0", 7, "#666666"))
+            label_y = min(py + 12, y + h + 8)
+            cmds.append(text(px - 8, label_y, f"{values[idx]:.2f}", 7, "#303030"))
 
 
 def draw_radar_chart(cmds, cx, cy, radius, labels, values):
@@ -1042,8 +1043,8 @@ def add_report_pages(pdf, metrics, report_title, subtitle=None):
     cmds.append(text(42, 724, report_title, 11, RED, True))
     cmds.append(text(42, 708, WEEK_RULE_NOTE, 8, "#666666"))
     y = draw_section(cmds, 680, "4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas)")
-    draw_trend_chart(cmds, 70, y - 230, 455, 190, metrics["chart_labels"], metrics["chart_values"])
-    y = y - 260
+    draw_trend_chart(cmds, 70, y - 255, 455, 225, metrics["chart_labels"], metrics["chart_values"])
+    y = y - 290
     y = draw_section(cmds, y, "5. Resumen Semanas Recientes")
     recent_rows = [[r["periodo"], r["n_encuestas"], f"{r['promedio']:.2f}", f"{r.get('cumplimiento', 0):.1f}%", r["estado"]] for r in metrics["recent_weeks"]]
     draw_table(cmds, 42, y, ["SEMANA", "N° ENC.", "PROM.", "CUMP.", "ESTADO / ACCIÓN"], recent_rows, [185, 62, 55, 58, 150], row_h=22)
