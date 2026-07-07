@@ -1028,6 +1028,20 @@ def draw_radar_chart(cmds, cx, cy, radius, labels, values):
         cmds.append(text(lx - 25, ly, label[:14], 6.5, "#555555"))
 
 
+def draw_scale_legend(cmds, y):
+    # Bloque visible para explicar la escala en el reporte exportado PDF.
+    cmds.extend(rect(42, y - 76, 511, 76, "#fff8f9"))
+    cmds.extend(line(42, y, 553, y, RED, 1.4))
+    cmds.append(text(50, y - 15, "Escala de Cumplimiento y Excelencia", 10, RED, True))
+    cmds.append(text(50, y - 31, "1.0 a 3.9: Riesgo operativo", 8, "#303030"))
+    cmds.append(text(50, y - 44, "4.0 a 4.49: Bajo estándar", 8, "#303030"))
+    cmds.append(text(290, y - 31, "4.5 a 4.79: Cumple estándar operativo", 8, "#303030"))
+    cmds.append(text(290, y - 44, "4.8 a 5.0: Excelencia / Promotor", 8, "#303030"))
+    cmds.append(text(50, y - 61, "Cumplimiento: promedio >= 4.5 = 100%.", 7.5, "#555555"))
+    cmds.append(text(290, y - 61, "Excelencia: promedio >= 4.8.", 7.5, "#555555"))
+    return y - 92
+
+
 def pdf_footer(cmds):
     cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
     cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
@@ -1042,7 +1056,8 @@ def add_report_pages(pdf, metrics, report_title, subtitle=None):
         cmds.append(text(42, 708, subtitle, 8.5, "#666666"))
     y = draw_section(cmds, 680, "1. Resumen Ejecutivo (Macrométricas)")
     y = draw_kpi_cards(cmds, y, metrics)
-    y -= 8
+    y = draw_scale_legend(cmds, y)
+    y -= 2
     y = draw_section(cmds, y, "2. Distribución del Cumplimiento Operativo")
     risk_rows = [[r["categoria"], r["criterio"], r["volumen"], r["representacion"]] for r in metrics["risk"]]
     y = draw_table(cmds, 42, y, ["CATEGORÍA", "CRITERIO", "VOLUMEN", "REP."], risk_rows, [235, 125, 60, 90], row_h=22)
