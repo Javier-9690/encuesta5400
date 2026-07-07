@@ -503,8 +503,39 @@ def build_template_buffer():
 # -----------------------------------------------------------------------------
 
 def pdf_escape(text):
-    text = str(text or "")
-    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    """
+    Codifica texto para strings PDF usando bytes WinAnsi/CP1252 con escapes octales.
+    Esto evita que lectores PDF de navegador muestren tildes y eñes como caracteres rotos.
+    Ejemplo: ó se escribe como \363 dentro del PDF, no como byte ambiguo.
+    """
+    replacements = {
+        "•": "-",
+        "–": "-",
+        "—": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "…": "...",
+    }
+    value = str(text or "")
+    for src, dst in replacements.items():
+        value = value.replace(src, dst)
+
+    raw = value.encode("cp1252", "replace")
+    escaped = []
+    for byte in raw:
+        # Paréntesis y backslash deben escaparse en strings literales PDF.
+        # Bytes no ASCII se escriben como octal para conservar tildes/ñ.
+        if byte in (0x28, 0x29, 0x5C):
+            escaped.append(f"\\{byte:03o}")
+        elif 32 <= byte <= 126:
+            escaped.append(chr(byte))
+        elif byte in (9, 10, 13):
+            escaped.append(" ")
+        else:
+            escaped.append(f"\\{byte:03o}")
+    return "".join(escaped)
 
 
 def hex_to_rgb(hex_color):
@@ -609,13 +640,57 @@ def parse_png_rgb(path):
     return width, height, bytes(rgb)
 
 
+def build_winansi_tounicode_stream():
+    """CMap ToUnicode para que copiar/visualizar tildes en PDF sea estable."""
+    pairs = []
+    for code in range(32, 256):
+        try:
+            char = bytes([code]).decode("cp1252")
+        except UnicodeDecodeError:
+            continue
+        if not char:
+            continue
+        pairs.append((code, ord(char)))
+
+    lines = [
+        "/CIDInit /ProcSet findresource begin",
+        "12 dict begin",
+        "begincmap",
+        "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+        "/CMapName /WinAnsiToUnicode def",
+        "/CMapType 2 def",
+        "1 begincodespacerange",
+        "<00> <FF>",
+        "endcodespacerange",
+    ]
+    for start in range(0, len(pairs), 100):
+        chunk = pairs[start:start + 100]
+        lines.append(f"{len(chunk)} beginbfchar")
+        for code, uni in chunk:
+            lines.append(f"<{code:02X}> <{uni:04X}>")
+        lines.append("endbfchar")
+    lines.extend([
+        "endcmap",
+        "CMapName currentdict /CMap defineresource pop",
+        "end",
+        "end",
+    ])
+    stream = "\n".join(lines).encode("ascii")
+    return f"<< /Length {len(stream)} >>\nstream\n".encode("latin-1") + stream + b"\nendstream"
+
+
 class SimplePDF:
     def __init__(self):
         self.objects = [None]
         self.catalog_id = self.reserve()
         self.pages_id = self.reserve()
-        self.font_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
-        self.font_bold_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
+        self.tounicode_id = self.add_object(build_winansi_tounicode_stream())
+        self.font_id = self.add_object(
+            f"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding /ToUnicode {self.tounicode_id} 0 R >>"
+        )
+        self.font_bold_id = self.add_object(
+            f"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /ToUnicode {self.tounicode_id} 0 R >>"
+        )
         self.pages = []
         self.images = {}
 
@@ -644,7 +719,7 @@ class SimplePDF:
             pass
 
     def add_page(self, commands):
-        content_bytes = "\n".join(commands).encode("cp1252", "replace")
+        content_bytes = "\n".join(commands).encode("latin-1")
         content_id = self.add_object(f"<< /Length {len(content_bytes)} >>\nstream\n".encode("latin-1") + content_bytes + b"\nendstream")
         page_id = self.reserve()
         xobjects = " ".join(f"/{name} {info['id']} 0 R" for name, info in self.images.items())
@@ -865,9 +940,18 @@ def generate_pdf_report(metrics):
     y = draw_section(cmds, y, "5. Resumen Semanas Recientes")
     recent_rows = [[r["periodo"], r["n_encuestas"], f"{r['promedio']:.2f}", r["estado"]] for r in metrics["recent_weeks"]]
     y = draw_table(cmds, 42, y, ["SEMANA", "N° ENC.", "PROM.", "ESTADO / ACCIÓN"], recent_rows, [210, 75, 75, 150], row_h=22)
-    y = draw_section(cmds, y, f"6. Desempeño Específico por Dimensiones ({metrics['latest_label']})")
+    cmds.extend(line(42, 46, 553, 46, "#dddddd", 0.5))
+    cmds.append(text(126, 30, f"Generado automáticamente a partir de datos operacionales • Evaluación Interna • {datetime.now():%Y-%m-%d}", 7, "#999999"))
+    pdf.add_page(cmds)
+
+    # Página exclusiva para la sección 6, así se evita que el gráfico radar se mezcle con el pie de página.
+    cmds = []
+    pdf_header(cmds, pdf)
+    cmds.append(text(42, 742, "ANÁLISIS DE TENDENCIAS Y DESGLOSE", 18, "#202020", True))
+    cmds.append(text(42, 724, "Monitoreo semanal de resultados operativos", 10, "#666666"))
+    y = draw_section(cmds, 690, f"6. Desempeño Específico por Dimensiones ({metrics['latest_label']})")
     cmds.append(text(42, y + 10, "Una calificación por debajo de 4.70 se considera foco de atención preventivo.", 8.5, "#555555"))
-    draw_radar_chart(cmds, 175, y - 145, 85, metrics["radar_labels"], metrics["radar_values"])
+    draw_radar_chart(cmds, 175, y - 150, 80, metrics["radar_labels"], metrics["radar_values"])
     dy = y - 60
     for item in metrics["dimensions"]:
         color = RED if item["foco"] else "#2f7d32"

@@ -54,3 +54,7 @@ También puedes descargar una plantilla desde la pantalla principal.
 
 Esta versión fuerza `charset=utf-8` en las respuestas HTML/CSV/JSON para que palabras con tildes y ñ se vean correctamente en Render. También mantiene el PDF con codificación WinAnsi para preservar acentos en el exportable.
 
+
+## Corrección PDF acentos y ñ
+
+El exportador PDF fue ajustado para escribir los caracteres con tildes y ñ mediante escapes octales WinAnsi/CP1252 y un mapa ToUnicode. Esto evita que el visor PDF de Render/navegador muestre textos como `Evaluaci�n` al exportar el reporte.
