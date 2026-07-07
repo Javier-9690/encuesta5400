@@ -57,3 +57,16 @@ La antigua tabla de promotores/neutros/detractores fue reemplazada por una medic
 - **No cumple estándar operativo:** promedio < 4.5.
 
 La estructura semanal se mantiene como lunes a domingo, con numeración ISO, igual que en la hoja KPI Semanal.
+
+
+## Escala de cumplimiento y excelencia
+
+- **1.0 a 3.9:** Riesgo operativo
+- **4.0 a 4.49:** Bajo estándar
+- **4.5 a 4.79:** Cumple estándar operativo
+- **4.8 a 5.0:** Excelencia / Promotor
+
+Reglas:
+
+- **Cumplimiento:** promedio >= 4.5 = 100%
+- **Excelencia:** promedio >= 4.8
