@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import csv
 import io
 import json
@@ -613,8 +614,8 @@ class SimplePDF:
         self.objects = [None]
         self.catalog_id = self.reserve()
         self.pages_id = self.reserve()
-        self.font_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-        self.font_bold_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+        self.font_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>")
+        self.font_bold_id = self.add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>")
         self.pages = []
         self.images = {}
 
@@ -643,7 +644,7 @@ class SimplePDF:
             pass
 
     def add_page(self, commands):
-        content_bytes = "\n".join(commands).encode("latin-1", "replace")
+        content_bytes = "\n".join(commands).encode("cp1252", "replace")
         content_id = self.add_object(f"<< /Length {len(content_bytes)} >>\nstream\n".encode("latin-1") + content_bytes + b"\nendstream")
         page_id = self.reserve()
         xobjects = " ".join(f"/{name} {info['id']} 0 R" for name, info in self.images.items())
@@ -881,6 +882,14 @@ def generate_pdf_report(metrics):
     return pdf.finish()
 
 
+@app.after_request
+def force_utf8_headers(response):
+    """Evita caracteres rotos en Render/navegador para tildes, ñ y símbolos."""
+    if response.mimetype in {"text/html", "text/css", "text/javascript", "application/javascript", "text/csv", "application/json"}:
+        response.headers["Content-Type"] = f"{response.mimetype}; charset=utf-8"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
 @app.context_processor
 def inject_helpers():
     return {"json_dumps": json.dumps, "status_class": status_class}
@@ -919,7 +928,7 @@ def plantilla():
 def exportar_csv():
     data = load_data()
     content = export_csv_buffer(data)
-    return Response(content, mimetype="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=encuesta_satisfaccion_5400.csv"})
+    return Response(content, content_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=encuesta_satisfaccion_5400.csv"})
 
 
 @app.route("/exportar/excel")
