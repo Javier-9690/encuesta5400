@@ -51,8 +51,10 @@ DIMENSION_LABELS = {
 RADAR_LABELS = ["Q1 Recepción", "Q2 Calidad", "Q3 Tiempos", "Q4 Higiene", "Q5 Trato"]
 RED = "#ed1b2e"
 RED_DARK = "#b60f1f"
-WEEK_RULE_NOTE = ("Estructura semanal: lunes a domingo, con numeración ISO. "
-"Se incluyen semanas sin encuestas y proyección automática.")
+WEEK_RULE_NOTE = (
+    "Estructura semanal: lunes a domingo, con numeración ISO. "
+    "Se incluyen semanas sin encuestas y se proyectan 12 semanas futuras."
+)
 WEEKS_TO_PROJECT = 12
 
 
@@ -366,13 +368,22 @@ def build_filter_label(fecha_inicio=None, fecha_fin=None):
 
 
 def start_of_week(dt):
-    return (dt - timedelta(days=dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    """Devuelve el lunes correspondiente a la fecha recibida."""
+    return (
+        dt - timedelta(days=dt.weekday())
+    ).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def week_label(start_date):
+    """
+    Genera el nombre oficial de la semana.
+
+    Ejemplo:
+        Sem. 19 (04-05 al 10-05)
+    """
     end_date = start_date + timedelta(days=6)
-    iso = start_date.isocalendar()
-    return f"Sem. {int(iso.week):02d} ({start_date:%d-%m} al {end_date:%d-%m})"
+    iso_week = int(start_date.isocalendar().week)
+    return f"Sem. {iso_week} ({start_date:%d-%m} al {end_date:%d-%m})"
 
 
 def average(values):
@@ -381,39 +392,95 @@ def average(values):
 
 
 def projected_week_range(data, weeks_to_project=WEEKS_TO_PROJECT):
-    current=start_of_week(datetime.now())
-    dates=[i["fecha_dt"] for i in data if i.get("fecha_dt")]
-    if dates:
-        first=start_of_week(min(dates)); last=start_of_week(max(dates))
-    else:
-        first=current; last=current
-    end=max(last,current+timedelta(weeks=weeks_to_project))
-    out=[]; c=first
-    while c<=end:
-        out.append(c); c+=timedelta(weeks=1)
-    return out
+    """
+    Genera semanas correlativas desde la primera semana con registros
+    hasta doce semanas después de la semana actual.
 
-def build_weekly(data):
-    buckets=defaultdict(list)
+    Si existen registros posteriores a esa proyección, también se incluyen.
+    """
+    current_week = start_of_week(datetime.now())
+
+    valid_dates = [
+        item.get("fecha_dt")
+        for item in data
+        if item.get("fecha_dt") is not None
+    ]
+
+    if valid_dates:
+        first_week = start_of_week(min(valid_dates))
+        last_data_week = start_of_week(max(valid_dates))
+    else:
+        first_week = current_week
+        last_data_week = current_week
+
+    projected_end = current_week + timedelta(weeks=weeks_to_project)
+    final_week = max(last_data_week, projected_end)
+
+    weeks = []
+    cursor = first_week
+
+    while cursor <= final_week:
+        weeks.append(cursor)
+        cursor += timedelta(weeks=1)
+
+    return weeks
+
+
+def build_weekly(data, include_projection=True):
+    """
+    Construye la secuencia semanal completa.
+
+    Las semanas sin encuestas se conservan en el resumen semanal para que
+    pantalla, Excel y PDF compartan la misma estructura de periodos.
+    """
+    buckets = defaultdict(list)
+
     for item in data:
-        buckets[start_of_week(item["fecha_dt"])].append(item)
-    weekly=[]
-    for week_start in projected_week_range(data):
-        rows=buckets.get(week_start,[])
-        record={
-            "week_start":week_start,
-            "week_end":week_start+timedelta(days=6),
-            "iso_year":week_start.isocalendar().year,
-            "iso_week":week_start.isocalendar().week,
-            "periodo":week_label(week_start),
-            "n_encuestas":len(rows),
-            "promedio_general":average([r.get("promedio") for r in rows]),
+        fecha_dt = item.get("fecha_dt")
+        if fecha_dt is None:
+            continue
+        buckets[start_of_week(fecha_dt)].append(item)
+
+    week_starts = (
+        projected_week_range(data)
+        if include_projection
+        else sorted(buckets)
+    )
+
+    weekly = []
+
+    for week_start in week_starts:
+        rows = buckets.get(week_start, [])
+
+        record = {
+            "week_start": week_start,
+            "week_end": week_start + timedelta(days=6),
+            "iso_year": int(week_start.isocalendar().year),
+            "iso_week": int(week_start.isocalendar().week),
+            "periodo": week_label(week_start),
+            "n_encuestas": len(rows),
+            "promedio_general": average(
+                [row.get("promedio") for row in rows]
+            ),
         }
-        record["cumplimiento"]=cumplimiento_from_score(record["promedio_general"])
-        for col in DIMENSION_LABELS:
-            record[col]=average([r.get(col) for r in rows])
-        record["estado"]=status_from_score(record["promedio_general"]) if rows else "Sin encuestas"
+
+        record["cumplimiento"] = cumplimiento_from_score(
+            record["promedio_general"]
+        )
+
+        for column in DIMENSION_LABELS:
+            record[column] = average(
+                [row.get(column) for row in rows]
+            )
+
+        record["estado"] = (
+            status_from_score(record["promedio_general"])
+            if rows
+            else "Sin encuestas"
+        )
+
         weekly.append(record)
+
     return weekly
 
 
@@ -455,18 +522,37 @@ def build_metrics(data):
 
     comments = [item.get("comentarios", "") for item in sorted(data, key=lambda r: r["fecha_dt"], reverse=True) if item.get("comentarios", "").strip()][:6]
     weekly = build_weekly(data)
-    current_week=start_of_week(datetime.now())
-    visible=[w for w in weekly if w["week_start"]<=current_week]
-    last_10=visible[-10:]
-    recent=visible[-3:]
-    data_weeks=[w for w in weekly if w["n_encuestas"]>0]
-    if data_weeks:
-        latest_start=data_weeks[-1]["week_start"]
-        latest_rows=[item for item in data if start_of_week(item["fecha_dt"])==latest_start]
-        latest_label=data_weeks[-1]["periodo"]
+
+    # La proyección completa permanece disponible para reportes y Excel.
+    # Los gráficos y el resumen reciente solo usan semanas con encuestas,
+    # evitando intentar formatear valores None como números.
+    current_week = start_of_week(datetime.now())
+    weeks_with_data = [
+        row for row in weekly
+        if row["n_encuestas"] > 0 and row["week_start"] <= current_week
+    ]
+
+    # Si existen datos con fecha futura, también pueden ser la última semana
+    # válida para el análisis de dimensiones, sin afectar los gráficos actuales.
+    all_weeks_with_data = [
+        row for row in weekly
+        if row["n_encuestas"] > 0
+    ]
+
+    last_10 = weeks_with_data[-10:]
+    recent = weeks_with_data[-3:]
+
+    if all_weeks_with_data:
+        latest_start = all_weeks_with_data[-1]["week_start"]
+        latest_rows = [
+            item
+            for item in data
+            if start_of_week(item["fecha_dt"]) == latest_start
+        ]
+        latest_label = all_weeks_with_data[-1]["periodo"]
     else:
-        latest_rows=data
-        latest_label="Total histórico"
+        latest_rows = data
+        latest_label = "Total histórico"
 
     dimensions = []
     for key, label in DIMENSION_LABELS.items():
