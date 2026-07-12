@@ -98,7 +98,7 @@
     </div>
   </section>
 
-  <section class="section-title">4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas)</section>
+  <section class="section-title">4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas con Datos)</section>
   <div class="chart-card">
     <canvas id="trendChart_{{ prefix }}" height="130"></canvas>
   </div>
@@ -120,9 +120,21 @@
         <tr>
           <td>{{ row.periodo }}</td>
           <td>{{ row.n_encuestas }}</td>
-          <td><strong>{{ '%.2f'|format(row.promedio) }}</strong></td>
-          <td><strong>{{ '%.1f'|format(row.cumplimiento) }}%</strong></td>
+          <td>
+            <strong>
+              {{ 'Sin datos' if row.promedio is none else '%.2f'|format(row.promedio) }}
+            </strong>
+          </td>
+          <td>
+            <strong>
+              {{ '-' if row.promedio is none else ('%.1f'|format(row.cumplimiento) ~ '%') }}
+            </strong>
+          </td>
           <td class="{{ status_class(row.estado) }}"><strong>{{ row.estado }}</strong></td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5">No existen semanas con encuestas para mostrar.</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -239,7 +251,7 @@
     <button type="submit">Ver reporte por fecha</button>
     <a class="btn secondary" href="{{ url_for('dashboard') }}">Limpiar filtro</a>
   </form>
-  <p>El reporte histórico siempre se mantiene. El reporte por fecha usa el rango seleccionado y conserva la misma estructura semanal previamente definida: lunes a domingo y numeración ISO.</p>
+  <p>El reporte histórico siempre se mantiene. El reporte por fecha usa el rango seleccionado y conserva semanas de lunes a domingo con numeración ISO y proyección automática.</p>
 </section>
 
 <section class="actions">
