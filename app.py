@@ -51,7 +51,9 @@ DIMENSION_LABELS = {
 RADAR_LABELS = ["Q1 Recepción", "Q2 Calidad", "Q3 Tiempos", "Q4 Higiene", "Q5 Trato"]
 RED = "#ed1b2e"
 RED_DARK = "#b60f1f"
-WEEK_RULE_NOTE = "Estructura semanal: lunes a domingo, manteniendo numeración ISO previamente definida."
+WEEK_RULE_NOTE = ("Estructura semanal: lunes a domingo, con numeración ISO. "
+"Se incluyen semanas sin encuestas y proyección automática.")
+WEEKS_TO_PROJECT = 12
 
 
 app = Flask(__name__)
@@ -378,26 +380,39 @@ def average(values):
     return round(mean(clean), 2) if clean else None
 
 
+def projected_week_range(data, weeks_to_project=WEEKS_TO_PROJECT):
+    current=start_of_week(datetime.now())
+    dates=[i["fecha_dt"] for i in data if i.get("fecha_dt")]
+    if dates:
+        first=start_of_week(min(dates)); last=start_of_week(max(dates))
+    else:
+        first=current; last=current
+    end=max(last,current+timedelta(weeks=weeks_to_project))
+    out=[]; c=first
+    while c<=end:
+        out.append(c); c+=timedelta(weeks=1)
+    return out
+
 def build_weekly(data):
-    buckets = defaultdict(list)
+    buckets=defaultdict(list)
     for item in data:
         buckets[start_of_week(item["fecha_dt"])].append(item)
-    weekly = []
-    for week_start in sorted(buckets):
-        rows = buckets[week_start]
-        record = {
-            "week_start": week_start,
-            "week_end": week_start + timedelta(days=6),
-            "iso_year": week_start.isocalendar().year,
-            "iso_week": week_start.isocalendar().week,
-            "periodo": week_label(week_start),
-            "n_encuestas": len(rows),
-            "promedio_general": average([r.get("promedio") for r in rows]),
+    weekly=[]
+    for week_start in projected_week_range(data):
+        rows=buckets.get(week_start,[])
+        record={
+            "week_start":week_start,
+            "week_end":week_start+timedelta(days=6),
+            "iso_year":week_start.isocalendar().year,
+            "iso_week":week_start.isocalendar().week,
+            "periodo":week_label(week_start),
+            "n_encuestas":len(rows),
+            "promedio_general":average([r.get("promedio") for r in rows]),
         }
-        record["cumplimiento"] = cumplimiento_from_score(record["promedio_general"])
+        record["cumplimiento"]=cumplimiento_from_score(record["promedio_general"])
         for col in DIMENSION_LABELS:
-            record[col] = average([r.get(col) for r in rows])
-        record["estado"] = status_from_score(record["promedio_general"])
+            record[col]=average([r.get(col) for r in rows])
+        record["estado"]=status_from_score(record["promedio_general"]) if rows else "Sin encuestas"
         weekly.append(record)
     return weekly
 
@@ -440,16 +455,18 @@ def build_metrics(data):
 
     comments = [item.get("comentarios", "") for item in sorted(data, key=lambda r: r["fecha_dt"], reverse=True) if item.get("comentarios", "").strip()][:6]
     weekly = build_weekly(data)
-    last_10 = weekly[-10:]
-    recent = weekly[-3:]
-
-    if weekly:
-        latest_start = weekly[-1]["week_start"]
-        latest_rows = [item for item in data if start_of_week(item["fecha_dt"]) == latest_start]
-        latest_label = weekly[-1]["periodo"]
+    current_week=start_of_week(datetime.now())
+    visible=[w for w in weekly if w["week_start"]<=current_week]
+    last_10=visible[-10:]
+    recent=visible[-3:]
+    data_weeks=[w for w in weekly if w["n_encuestas"]>0]
+    if data_weeks:
+        latest_start=data_weeks[-1]["week_start"]
+        latest_rows=[item for item in data if start_of_week(item["fecha_dt"])==latest_start]
+        latest_label=data_weeks[-1]["periodo"]
     else:
-        latest_rows = data
-        latest_label = "Total histórico"
+        latest_rows=data
+        latest_label="Total histórico"
 
     dimensions = []
     for key, label in DIMENSION_LABELS.items():
