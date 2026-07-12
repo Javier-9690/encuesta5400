@@ -10,6 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from html import escape as html_escape
 from statistics import mean
+from zoneinfo import ZoneInfo
 
 from flask import Flask, Response, flash, redirect, render_template, request, send_file, url_for
 from openpyxl import Workbook, load_workbook
@@ -52,10 +53,10 @@ RADAR_LABELS = ["Q1 Recepción", "Q2 Calidad", "Q3 Tiempos", "Q4 Higiene", "Q5 T
 RED = "#ed1b2e"
 RED_DARK = "#b60f1f"
 WEEK_RULE_NOTE = (
-    "Estructura semanal: lunes a domingo, con numeración ISO. "
-    "Se incluyen semanas sin encuestas y se proyectan 12 semanas futuras."
+    "Estructura semanal: lunes a domingo. "
+    "La semana se publica al cerrarse el domingo y luego se presenta hacia atrás."
 )
-WEEKS_TO_PROJECT = 12
+REPORT_TIMEZONE = ZoneInfo(os.environ.get("REPORT_TIMEZONE", "America/Santiago"))
 
 
 app = Flask(__name__)
@@ -391,73 +392,100 @@ def average(values):
     return round(mean(clean), 2) if clean else None
 
 
-def projected_week_range(data, weeks_to_project=WEEKS_TO_PROJECT):
+def latest_report_week_start(reference_date=None):
     """
-    Genera semanas correlativas desde la primera semana con registros
-    hasta doce semanas después de la semana actual.
+    Determina la semana que debe publicarse.
 
-    Si existen registros posteriores a esa proyección, también se incluyen.
+    - Domingo: publica la semana que termina ese mismo día.
+    - Lunes a sábado: conserva la semana terminada el domingo anterior.
+
+    La fecha se evalúa con la zona horaria de Chile.
     """
-    current_week = start_of_week(datetime.now())
+    if reference_date is None:
+        current_date = datetime.now(REPORT_TIMEZONE).date()
+    elif isinstance(reference_date, datetime):
+        current_date = reference_date.date()
+    else:
+        current_date = reference_date
 
-    valid_dates = [
-        item.get("fecha_dt")
+    current_monday = current_date - timedelta(days=current_date.weekday())
+
+    if current_date.weekday() == 6:
+        report_monday = current_monday
+    else:
+        report_monday = current_monday - timedelta(days=7)
+
+    return datetime.combine(report_monday, datetime.min.time())
+
+
+def latest_report_week_end(reference_date=None):
+    """Devuelve el domingo de la última semana publicable."""
+    return latest_report_week_start(reference_date) + timedelta(days=6)
+
+
+def filter_data_through_closed_week(data, reference_date=None):
+    """
+    Excluye registros pertenecientes a una semana todavía abierta.
+
+    Los registros de una nueva semana se incorporan automáticamente
+    cuando llega el domingo correspondiente.
+    """
+    cutoff_date = latest_report_week_end(reference_date).date()
+
+    return [
+        item
         for item in data
         if item.get("fecha_dt") is not None
+        and item["fecha_dt"].date() <= cutoff_date
     ]
 
-    if valid_dates:
-        first_week = start_of_week(min(valid_dates))
-        last_data_week = start_of_week(max(valid_dates))
-    else:
-        first_week = current_week
-        last_data_week = current_week
 
-    projected_end = current_week + timedelta(weeks=weeks_to_project)
-    final_week = max(last_data_week, projected_end)
-
-    weeks = []
-    cursor = first_week
-
-    while cursor <= final_week:
-        weeks.append(cursor)
-        cursor += timedelta(weeks=1)
-
-    return weeks
-
-
-def build_weekly(data, include_projection=True):
+def build_weekly(data, final_week=None):
     """
-    Construye la secuencia semanal completa.
+    Construye semanas correlativas hasta la última semana cerrada.
 
-    Las semanas sin encuestas se conservan en el resumen semanal para que
-    pantalla, Excel y PDF compartan la misma estructura de periodos.
+    Las semanas sin encuestas se conservan para mantener la secuencia
+    Sem. 28, Sem. 27, Sem. 26, etc.
     """
+    if final_week is None:
+        final_week = latest_report_week_start()
+
     buckets = defaultdict(list)
 
     for item in data:
         fecha_dt = item.get("fecha_dt")
         if fecha_dt is None:
             continue
-        buckets[start_of_week(fecha_dt)].append(item)
 
-    week_starts = (
-        projected_week_range(data)
-        if include_projection
-        else sorted(buckets)
+        week_start = start_of_week(fecha_dt)
+        if week_start <= final_week:
+            buckets[week_start].append(item)
+
+    valid_dates = [
+        item.get("fecha_dt")
+        for item in data
+        if item.get("fecha_dt") is not None
+        and start_of_week(item["fecha_dt"]) <= final_week
+    ]
+
+    first_week = (
+        start_of_week(min(valid_dates))
+        if valid_dates
+        else final_week
     )
 
     weekly = []
+    cursor = first_week
 
-    for week_start in week_starts:
-        rows = buckets.get(week_start, [])
+    while cursor <= final_week:
+        rows = buckets.get(cursor, [])
 
         record = {
-            "week_start": week_start,
-            "week_end": week_start + timedelta(days=6),
-            "iso_year": int(week_start.isocalendar().year),
-            "iso_week": int(week_start.isocalendar().week),
-            "periodo": week_label(week_start),
+            "week_start": cursor,
+            "week_end": cursor + timedelta(days=6),
+            "iso_year": int(cursor.isocalendar().year),
+            "iso_week": int(cursor.isocalendar().week),
+            "periodo": week_label(cursor),
             "n_encuestas": len(rows),
             "promedio_general": average(
                 [row.get("promedio") for row in rows]
@@ -480,12 +508,22 @@ def build_weekly(data, include_projection=True):
         )
 
         weekly.append(record)
+        cursor += timedelta(weeks=1)
 
     return weekly
 
 
-def build_metrics(data):
-    if not data:
+def build_metrics(data, include_current_closed_week=True):
+    """
+    Calcula métricas usando exclusivamente semanas publicables.
+
+    El reporte histórico termina en la última semana cerrada. En reportes
+    filtrados, la secuencia termina en la última semana del rango que tenga
+    datos, sin superar la última semana cerrada.
+    """
+    closed_data = filter_data_through_closed_week(data)
+
+    if not closed_data:
         return {
             "has_data": False,
             "total": 0,
@@ -502,78 +540,135 @@ def build_metrics(data):
             "chart_values": [],
             "radar_labels": RADAR_LABELS,
             "radar_values": [],
-            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "generated_at": datetime.now(REPORT_TIMEZONE).strftime("%Y-%m-%d %H:%M"),
             "global_status": "Sin datos",
-            "latest_label": "Sin datos",
+            "latest_label": week_label(latest_report_week_start()),
             "week_rule_note": WEEK_RULE_NOTE,
         }
 
-    total = len(data)
-    global_score = average([item.get("promedio") for item in data]) or 0
+    current_closed_week = latest_report_week_start()
+
+    if include_current_closed_week:
+        final_week = current_closed_week
+    else:
+        final_week = min(
+            current_closed_week,
+            start_of_week(max(item["fecha_dt"] for item in closed_data)),
+        )
+
+    total = len(closed_data)
+    global_score = average([item.get("promedio") for item in closed_data]) or 0
     cumplimiento = cumplimiento_from_score(global_score)
-    promoters = sum(1 for item in data if item.get("promedio", 0) >= 4.8)
-    cumplen = sum(1 for item in data if cumple_umbral(item.get("promedio")))
+    promoters = sum(1 for item in closed_data if item.get("promedio", 0) >= 4.8)
+    cumplen = sum(1 for item in closed_data if cumple_umbral(item.get("promedio")))
     no_cumplen = total - cumplen
 
     risk = [
-        {"categoria": "Cumple estándar operativo", "criterio": "Promedio >= 4.5", "volumen": cumplen, "representacion": pct(cumplen, total), "kind": "ok"},
-        {"categoria": "No cumple estándar operativo", "criterio": "Promedio < 4.5", "volumen": no_cumplen, "representacion": pct(no_cumplen, total), "kind": "danger"},
+        {
+            "categoria": "Cumple estándar operativo",
+            "criterio": "Promedio >= 4.5",
+            "volumen": cumplen,
+            "representacion": pct(cumplen, total),
+            "kind": "ok",
+        },
+        {
+            "categoria": "No cumple estándar operativo",
+            "criterio": "Promedio < 4.5",
+            "volumen": no_cumplen,
+            "representacion": pct(no_cumplen, total),
+            "kind": "danger",
+        },
     ]
 
-    comments = [item.get("comentarios", "") for item in sorted(data, key=lambda r: r["fecha_dt"], reverse=True) if item.get("comentarios", "").strip()][:6]
-    weekly = build_weekly(data)
+    comments = [
+        item.get("comentarios", "")
+        for item in sorted(
+            closed_data,
+            key=lambda row: row["fecha_dt"],
+            reverse=True,
+        )
+        if item.get("comentarios", "").strip()
+    ][:6]
 
-    # La proyección completa permanece disponible para reportes y Excel.
-    # Los gráficos y el resumen reciente solo usan semanas con encuestas,
-    # evitando intentar formatear valores None como números.
-    current_week = start_of_week(datetime.now())
-    weeks_with_data = [
-        row for row in weekly
-        if row["n_encuestas"] > 0 and row["week_start"] <= current_week
+    weekly = build_weekly(closed_data, final_week=final_week)
+
+    # Gráfico: orden cronológico, desde semanas anteriores hasta la actual.
+    chart_weeks = [
+        row
+        for row in weekly
+        if row["promedio_general"] is not None
+    ][-10:]
+
+    # Tabla: comienza por la semana cerrada vigente y retrocede.
+    recent = list(reversed(weekly[-10:]))
+
+    latest_rows = [
+        item
+        for item in closed_data
+        if start_of_week(item["fecha_dt"]) == final_week
     ]
-
-    # Si existen datos con fecha futura, también pueden ser la última semana
-    # válida para el análisis de dimensiones, sin afectar los gráficos actuales.
-    all_weeks_with_data = [
-        row for row in weekly
-        if row["n_encuestas"] > 0
-    ]
-
-    last_10 = weeks_with_data[-10:]
-    recent = weeks_with_data[-3:]
-
-    if all_weeks_with_data:
-        latest_start = all_weeks_with_data[-1]["week_start"]
-        latest_rows = [
-            item
-            for item in data
-            if start_of_week(item["fecha_dt"]) == latest_start
-        ]
-        latest_label = all_weeks_with_data[-1]["periodo"]
-    else:
-        latest_rows = data
-        latest_label = "Total histórico"
+    latest_label = week_label(final_week)
 
     dimensions = []
     for key, label in DIMENSION_LABELS.items():
-        score = average([r.get(key) for r in latest_rows])
-        dimensions.append({"codigo": key[:2].upper(), "label": label, "score": score, "foco": score is not None and score < 4.70})
+        score = average([row.get(key) for row in latest_rows])
+        dimensions.append(
+            {
+                "codigo": key[:2].upper(),
+                "label": label,
+                "score": score,
+                "foco": score is not None and score < 4.70,
+            }
+        )
 
-    sorted_dims = sorted([d for d in dimensions if d["score"] is not None], key=lambda x: x["score"])
+    sorted_dims = sorted(
+        [dimension for dimension in dimensions if dimension["score"] is not None],
+        key=lambda item: item["score"],
+    )
+
     analysis = []
+
     if sorted_dims:
         worst = sorted_dims[0]
         best = sorted_dims[-1]
-        analysis.append(f"Mejor dimensión: {best['label']} con {best['score']:.2f}.")
+        analysis.append(
+            f"Mejor dimensión de {latest_label}: "
+            f"{best['label']} con {best['score']:.2f}."
+        )
+
         if worst["score"] < 4.70:
-            analysis.append(f"Foco preventivo: {worst['label']} registra {worst['score']:.2f}, bajo el umbral 4.70.")
+            analysis.append(
+                f"Foco preventivo de {latest_label}: "
+                f"{worst['label']} registra {worst['score']:.2f}, "
+                "bajo el umbral 4.70."
+            )
         else:
-            analysis.append(f"Sin foco crítico: la dimensión más baja es {worst['label']} con {worst['score']:.2f}.")
+            analysis.append(
+                f"Sin foco crítico en {latest_label}: "
+                f"la dimensión más baja es {worst['label']} "
+                f"con {worst['score']:.2f}."
+            )
+    else:
+        analysis.append(
+            f"{latest_label} no registra encuestas para el análisis por dimensiones."
+        )
+
     if no_cumplen > 0:
-        analysis.append(f"Cumplimiento operativo: {no_cumplen} evaluaciones están bajo 4.5 y requieren revisión cualitativa.")
+        analysis.append(
+            f"Cumplimiento operativo histórico hasta {latest_label}: "
+            f"{no_cumplen} evaluaciones están bajo 4.5."
+        )
+
     if comments:
-        analysis.append("La revisión de comentarios recientes permite identificar causas operativas específicas detrás de los puntajes.")
-    analysis.append(f"Cumplimiento: {cumplimiento:.1f}% según regla operativa promedio >= 4.5 equivale a 100%.")
+        analysis.append(
+            "La revisión de comentarios recientes permite identificar "
+            "causas operativas específicas detrás de los puntajes."
+        )
+
+    analysis.append(
+        f"Cumplimiento histórico hasta {latest_label}: "
+        f"{cumplimiento:.1f}% según la regla promedio >= 4.5."
+    )
 
     return {
         "has_data": True,
@@ -585,15 +680,24 @@ def build_metrics(data):
         "risk": risk,
         "comments": comments,
         "weekly": weekly,
-        "recent_weeks": [{"periodo": r["periodo"], "n_encuestas": r["n_encuestas"], "promedio": r["promedio_general"], "cumplimiento": r.get("cumplimiento", 0), "estado": r["estado"]} for r in recent],
+        "recent_weeks": [
+            {
+                "periodo": row["periodo"],
+                "n_encuestas": row["n_encuestas"],
+                "promedio": row["promedio_general"],
+                "cumplimiento": row.get("cumplimiento", 0),
+                "estado": row["estado"],
+            }
+            for row in recent
+        ],
         "dimensions": dimensions,
         "latest_label": latest_label,
         "analysis": analysis,
-        "chart_labels": [r["periodo"] for r in last_10],
-        "chart_values": [r["promedio_general"] for r in last_10],
+        "chart_labels": [row["periodo"] for row in chart_weeks],
+        "chart_values": [row["promedio_general"] for row in chart_weeks],
         "radar_labels": RADAR_LABELS,
-        "radar_values": [d["score"] or 0 for d in dimensions],
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "radar_values": [dimension["score"] or 0 for dimension in dimensions],
+        "generated_at": datetime.now(REPORT_TIMEZONE).strftime("%Y-%m-%d %H:%M"),
         "week_rule_note": WEEK_RULE_NOTE,
     }
 
@@ -1217,11 +1321,20 @@ def add_report_pages(pdf, metrics, report_title, subtitle=None):
     cmds.append(text(42, 742, "ANÁLISIS DE TENDENCIAS Y DESGLOSE", 18, "#202020", True))
     cmds.append(text(42, 724, report_title, 11, RED, True))
     cmds.append(text(42, 708, WEEK_RULE_NOTE, 8, "#666666"))
-    y = draw_section(cmds, 680, "4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas)")
+    y = draw_section(cmds, 680, "4. Evolución Histórica / Rango Seleccionado (Últimas 10 Semanas con Datos)")
     draw_trend_chart(cmds, 70, y - 255, 455, 225, metrics["chart_labels"], metrics["chart_values"])
     y = y - 320
     y = draw_section(cmds, y, "5. Resumen Semanas Recientes")
-    recent_rows = [[r["periodo"], r["n_encuestas"], f"{r['promedio']:.2f}", f"{r.get('cumplimiento', 0):.1f}%", r["estado"]] for r in metrics["recent_weeks"]]
+    recent_rows = [
+        [
+            row["periodo"],
+            row["n_encuestas"],
+            "-" if row["promedio"] is None else f"{row['promedio']:.2f}",
+            "-" if row["promedio"] is None else f"{row.get('cumplimiento', 0):.1f}%",
+            row["estado"],
+        ]
+        for row in metrics["recent_weeks"]
+    ]
     draw_table(cmds, 42, y, ["SEMANA", "N° ENC.", "PROM.", "CUMP.", "ESTADO / ACCIÓN"], recent_rows, [185, 62, 55, 58, 150], row_h=22)
     pdf_footer(cmds)
     pdf.add_page(cmds)
@@ -1273,12 +1386,13 @@ def inject_helpers():
 @app.route("/")
 def dashboard():
     data = load_data()
-    metrics = build_metrics(data)
+    report_data = filter_data_through_closed_week(data)
+    metrics = build_metrics(report_data)
     filter_start = (request.args.get("fecha_inicio") or "").strip()
     filter_end = (request.args.get("fecha_fin") or "").strip()
     filter_active = bool(filter_start or filter_end)
-    filtered_data = filter_data_by_dates(data, filter_start, filter_end) if filter_active else []
-    filtered_metrics = build_metrics(filtered_data) if filter_active else build_metrics([])
+    filtered_data = filter_data_by_dates(report_data, filter_start, filter_end) if filter_active else []
+    filtered_metrics = build_metrics(filtered_data, include_current_closed_week=False) if filter_active else build_metrics([])
     filter_label = build_filter_label(filter_start, filter_end)
     return render_template(
         "dashboard.html",
@@ -1324,30 +1438,56 @@ def exportar_csv():
 @app.route("/exportar/excel")
 def exportar_excel():
     data = load_data()
-    metrics = build_metrics(data)
+    report_data = filter_data_through_closed_week(data)
+    metrics = build_metrics(report_data)
     filter_start = (request.args.get("fecha_inicio") or "").strip()
     filter_end = (request.args.get("fecha_fin") or "").strip()
     filter_active = bool(filter_start or filter_end)
-    filtered_data = filter_data_by_dates(data, filter_start, filter_end) if filter_active else []
-    filtered_metrics = build_metrics(filtered_data) if filter_active else None
-    buffer = build_excel_buffer(data, metrics, filtered_data if filter_active else None, filtered_metrics, build_filter_label(filter_start, filter_end) if filter_active else None)
+    filtered_data = filter_data_by_dates(report_data, filter_start, filter_end) if filter_active else []
+    filtered_metrics = build_metrics(filtered_data, include_current_closed_week=False) if filter_active else None
+    buffer = build_excel_buffer(report_data, metrics, filtered_data if filter_active else None, filtered_metrics, build_filter_label(filter_start, filter_end) if filter_active else None)
     return send_file(buffer, as_attachment=True, download_name="reporte_encuesta_satisfaccion_5400.xlsx", mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.route("/exportar/pdf")
 def exportar_pdf():
     data = load_data()
-    metrics = build_metrics(data)
+    report_data = filter_data_through_closed_week(data)
+    metrics = build_metrics(report_data)
+
     if not metrics["has_data"]:
-        flash("No hay datos para exportar.", "error")
+        flash("No hay datos de semanas cerradas para exportar.", "error")
         return redirect(url_for("dashboard"))
+
     filter_start = (request.args.get("fecha_inicio") or "").strip()
     filter_end = (request.args.get("fecha_fin") or "").strip()
     filter_active = bool(filter_start or filter_end)
-    filtered_data = filter_data_by_dates(data, filter_start, filter_end) if filter_active else []
-    filtered_metrics = build_metrics(filtered_data) if filter_active else None
-    buffer = generate_pdf_report(metrics, filtered_metrics, build_filter_label(filter_start, filter_end) if filter_active else None)
-    return send_file(buffer, as_attachment=True, download_name="reporte_encuesta_satisfaccion_5400.pdf", mimetype="application/pdf")
+
+    filtered_data = (
+        filter_data_by_dates(report_data, filter_start, filter_end)
+        if filter_active
+        else []
+    )
+    filtered_metrics = (
+        build_metrics(filtered_data, include_current_closed_week=False)
+        if filter_active
+        else None
+    )
+
+    buffer = generate_pdf_report(
+        metrics,
+        filtered_metrics,
+        build_filter_label(filter_start, filter_end)
+        if filter_active
+        else None,
+    )
+
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name="reporte_encuesta_satisfaccion_5400.pdf",
+        mimetype="application/pdf",
+    )
 
 
 @app.route("/health")
