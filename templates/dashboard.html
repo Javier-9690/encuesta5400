@@ -251,7 +251,7 @@
     <button type="submit">Ver reporte por fecha</button>
     <a class="btn secondary" href="{{ url_for('dashboard') }}">Limpiar filtro</a>
   </form>
-  <p>El reporte histórico siempre se mantiene. El reporte por fecha usa el rango seleccionado y conserva semanas de lunes a domingo con numeración ISO y proyección automática.</p>
+  <p>El reporte histórico termina en la última semana cerrada. La nueva semana se incorpora automáticamente cada domingo y se presenta desde la más reciente hacia atrás.</p>
 </section>
 
 <section class="actions">
